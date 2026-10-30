@@ -1,0 +1,149 @@
+//auth
+
+-- 1. Enable UUID extension if not already enabled
+create extension if not exists "uuid-ossp";
+
+-- 2. Create public profiles table linked to Supabase auth.users
+create table public.profiles (
+  id uuid references auth.users(id) on delete cascade primary key,
+  first_name text not null,
+  last_name text not null,
+  email text not null unique,
+  role text not null check (role in ('Applicant', 'Mentor', 'Employer', 'Admin')),
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 3. Enable Row Level Security (RLS) for data protection
+alter table public.profiles enable row level security;
+
+-- 4. Create RLS Policies
+-- Policy: Users can read their own profile data
+create policy "Allow users to view their own profile"
+  on public.profiles for select
+  using (auth.uid() = id);
+
+-- Policy: Users can update their own profile data
+create policy "Allow users to update their own profile"
+  on public.profiles for update
+  using (auth.uid() = id);
+
+-- 5. Create a function to automatically sync new sign-ups from auth.users to public.profiles
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer set search_path = ''
+as $$
+begin
+  insert into public.profiles (id, first_name, last_name, email, role)
+  values (
+    new.id,
+    new.raw_user_meta_data ->> 'first_name',
+    new.raw_user_meta_data ->> 'last_name',
+    new.email,
+    coalesce(new.raw_user_meta_data ->> 'role', 'Applicant')
+  );
+  return new;
+end;
+$$;
+
+-- 6. Create a trigger that fires every time a new user registers in Supabase Auth
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();
+
+
+  //Applicant Portal
+
+  -- 1. Cohorts Table
+create table public.cohorts (
+  id uuid default uuid_generate_v4() primary key,
+  name text not null,
+  start_date date not null,
+  end_date date not null,
+  project_deadline timestamp with time zone not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 2. Mentors Table
+create table public.mentors (
+  id uuid default uuid_generate_v4() primary key,
+  profile_id uuid references public.profiles(id) on delete cascade not null,
+  profession text not null,
+  bio text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 3. Teams Table
+create table public.teams (
+  id uuid default uuid_generate_v4() primary key,
+  name text not null,
+  cohort_id uuid references public.cohorts(id) on delete cascade not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 4. Projects Table
+create table public.projects (
+  id uuid default uuid_generate_v4() primary key,
+  name text not null,
+  description text not null,
+  image_url text,
+  cohort_id uuid references public.cohorts(id) on delete cascade not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 5. Applicant Details Table (Links profile to cohort, mentor, team, project & progress)
+create table public.applicant_details (
+  id uuid default uuid_generate_v4() primary key,
+  profile_id uuid references public.profiles(id) on delete cascade not null unique,
+  profession text not null, -- e.g. Frontend Developer, Backend Developer, Product Designer
+  cohort_id uuid references public.cohorts(id) on delete set null,
+  mentor_id uuid references public.mentors(id) on delete set null,
+  team_id uuid references public.teams(id) on delete set null,
+  project_id uuid references public.projects(id) on delete set null,
+  completion_percentage numeric(5,2) default 0.00,
+  team_completion_percentage numeric(5,2) default 0.00,
+  stage text not null check (stage in ('Applied', 'Interview', 'Cohort Match', 'Onboarding', 'Active')),
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 6. Tasks Table (Upcoming deadlines for teams)
+create table public.tasks (
+  id uuid default uuid_generate_v4() primary key,
+  title text not null,
+  description text,
+  team_id uuid references public.teams(id) on delete cascade not null,
+  deadline timestamp with time zone not null,
+  status text default 'Pending' check (status in ('Pending', 'In Progress', 'Completed')),
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 7. Notifications Table
+create table public.notifications (
+  id uuid default uuid_generate_v4() primary key,
+  profile_id uuid references public.profiles(id) on delete cascade not null,
+  title text not null,
+  message text not null,
+  type text not null check (type in ('payment', 'cohort', 'mentor', 'pna_info', 'general')),
+  is_read boolean default false,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable RLS on all new tables
+alter table public.cohorts enable row level security;
+alter table public.mentors enable row level security;
+alter table public.teams enable row level security;
+alter table public.projects enable row level security;
+alter table public.applicant_details enable row level security;
+alter table public.tasks enable row level security;
+alter table public.notifications enable row level security;
+
+-- Basic read policies for authenticated users
+create policy "Enable read access for authenticated users on cohorts" on public.cohorts for select to authenticated using (true);
+create policy "Enable read access for authenticated users on mentors" on public.mentors for select to authenticated using (true);
+create policy "Enable read access for authenticated users on teams" on public.teams for select to authenticated using (true);
+create policy "Enable read access for authenticated users on projects" on public.projects for select to authenticated using (true);
+create policy "Users can view own applicant details" on public.applicant_details for select to authenticated using (auth.uid() = profile_id);
+create policy "Users can view team tasks" on public.tasks for select to authenticated using (true);
+create policy "Users can view own notifications" on public.notifications for select to authenticated using (auth.uid() = profile_id);
