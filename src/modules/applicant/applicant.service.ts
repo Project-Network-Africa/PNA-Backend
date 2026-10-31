@@ -7,8 +7,8 @@ export class ApplicantService {
 
   constructor() {
     this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_KEY,
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_KEY!,
     );
   }
 
@@ -26,7 +26,7 @@ export class ApplicantService {
 
     const { data: details, error: detailsError } = await this.supabase
       .from('applicant_details')
-      f.select(`
+      .select(`
         profession,
         completion_percentage,
         team_completion_percentage,
@@ -49,7 +49,8 @@ export class ApplicantService {
 
     // 2. Calculate remaining weeks until project deadline
     let weeksRemaining = 0;
-    const projectDeadline = details.cohorts?.[0]?.project_deadline || details.cohorts?.project_deadline;
+    const cohortData = details.cohorts as any;
+    const projectDeadline = cohortData?.project_deadline;
     if (projectDeadline) {
       const diffTime = new Date(projectDeadline).getTime() - new Date().getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -57,8 +58,9 @@ export class ApplicantService {
     }
 
     // 3. Fetch Team Members if team exists
-    let teamMembers = [];
-    const teamId = details.teams?.id;
+    let teamMembers: any[] = [];
+    const teamData = details.teams as any;
+    const teamId = teamData?.id;
     if (teamId) {
       const { data: members } = await this.supabase
         .from('applicant_details')
@@ -73,7 +75,7 @@ export class ApplicantService {
     }
 
     // 4. Fetch Upcoming Deadlines / Tasks for Team
-    let tasks = [];
+    let tasks: any[] = [];
     if (teamId) {
       const { data: teamTasks } = await this.supabase
         .from('tasks')
@@ -101,32 +103,35 @@ export class ApplicantService {
     }));
 
     // Format Mentor details & Action link
-    const mentorData = details.mentors ? {
-      name: `${details.mentors.profiles.first_name} ${details.mentors.profiles.last_name}`,
-      profession: details.mentors.profession,
-      email: details.mentors.email,
-      messageActionUrl: `/messages/mentor/${details.mentors.id}`,
+    const mentorDetails = details.mentors as any;
+    const mentorData = mentorDetails ? {
+      name: `${mentorDetails.profiles.first_name} ${mentorDetails.profiles.last_name}`,
+      profession: mentorDetails.profession,
+      email: mentorDetails.profiles.email,
+      messageActionUrl: `/messages/mentor/${mentorDetails.id}`,
     } : null;
+
+    const projectData = details.projects as any;
 
     return {
       applicant: {
         name: `${profile.first_name} ${profile.last_name}`,
         profession: details.profession,
-        cohort: details.cohorts?.name || 'Unassigned',
+        cohort: cohortData?.name || 'Unassigned',
         weeksRemaining,
         completionPercentage: details.completion_percentage,
         teamCompletionPercentage: details.team_completion_percentage,
       },
       mentor: mentorData,
       team: {
-        teamName: details.teams?.name || 'No Team Assigned',
+        teamName: teamData?.name || 'No Team Assigned',
         memberCount: teamMembers.length,
         members: teamMembers,
       },
-      currentProject: details.projects ? {
-        name: details.projects.name,
-        description: details.projects.description,
-        imageUrl: details.projects.image_url,
+      currentProject: projectData ? {
+        name: projectData.name,
+        description: projectData.description,
+        imageUrl: projectData.image_url,
       } : null,
       upcomingDeadlines: tasks,
       notifications: notifications || [],

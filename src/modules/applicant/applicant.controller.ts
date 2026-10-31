@@ -1,6 +1,6 @@
 import { Controller, Get, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
-import { ApplicantService } from './applicant.service';
+import { ApplicantService } from './applicant.service.js';
 
 @ApiTags('Applicant Portal')
 @ApiBearerAuth('JWT-auth')
