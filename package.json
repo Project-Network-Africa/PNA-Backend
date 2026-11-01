@@ -23,13 +23,15 @@
   },
   "dependencies": {
     "@directus/sdk": "^27.0.0",
-    "@nestjs/common": "^12.0.1",
+    "@nestjs/common": "^12.3.2",
     "@nestjs/config": "^12.0.1",
-    "@nestjs/core": "^12.0.1",
+    "@nestjs/core": "^12.3.2",
     "@nestjs/jwt": "^12.0.3",
     "@nestjs/passport": "^12.0.0",
-    "@nestjs/platform-express": "^12.0.1",
+    "@nestjs/platform-express": "^12.3.2",
+    "@nestjs/platform-socket.io": "^12.3.2",
     "@nestjs/swagger": "^12.0.4",
+    "@nestjs/websockets": "^12.3.2",
     "@supabase/supabase-js": "^2.118.0",
     "axios": "^1.20.0",
     "class-transformer": "^0.5.1",
@@ -39,6 +41,7 @@
     "reflect-metadata": "^0.2.2",
     "resend": "^6.34.1",
     "rxjs": "^7.8.1",
+    "socket.io": "^4.8.4",
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
