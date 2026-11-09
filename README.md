@@ -31,6 +31,20 @@
 $ npm install
 ```
 
+## CORS
+
+Set `CORS_ORIGINS` in the backend environment to a comma-separated list of frontend
+origins, with no paths or trailing slashes, for example:
+
+```env
+CORS_ORIGINS=http://localhost:3000,https://your-frontend.vercel.app
+```
+
+In production, add the deployed frontend's exact origin to the backend host's
+environment variables and restart/redeploy the backend. If `CORS_ORIGINS` is unset,
+the HTTP API allows any origin without credentialed requests. When origins are
+configured, credentialed requests are enabled.
+
 ## Compile and run the project
 
 ```bash

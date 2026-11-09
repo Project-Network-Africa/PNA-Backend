@@ -15,8 +15,15 @@ async function bootstrap() {
     }),
   );
 
-  // Enable CORS for frontend communication (Vercel / Localhost)
-  app.enableCors();
+  const corsOrigins = process.env.CORS_ORIGINS
+    ?.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  app.enableCors({
+    origin: corsOrigins?.length ? corsOrigins : '*',
+    credentials: Boolean(corsOrigins?.length),
+  });
 
   // Configure Swagger API Documentation
   const config = new DocumentBuilder()
