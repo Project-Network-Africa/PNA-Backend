@@ -8,6 +8,7 @@ import { UpdateSettingsDto } from './dto/settings.dto.js';
 import { UpdateEditProfileDto } from './dto/edit-profile.dto.js';
 import { EmailService } from '../email/email.service.js';
 import { ConfirmScheduleSessionDto } from './dto/schedule-session.dto.js';
+import { SendMessageDto } from './dto/messages.dto.js';
 
 
 @Injectable()
@@ -1185,4 +1186,318 @@ export class ApplicantService {
       },
     };
   }
+
+  // 1. DEACTIVATE ACCOUNT
+  async deactivateAccount(userId: string) {
+    const { error } = await this.supabase
+      .from('profiles')
+      .update({ is_active: false })
+      .eq('id', userId);
+
+    if (error) {
+      throw new BadRequestException('Failed to deactivate account');
+    }
+
+    return {
+      popupMessage: 'Your account has been deactivated',
+      isActive: false,
+    };
+  }
+
+  // 2. GET CONVERSATIONS LIST (Team-mates & Mentor with last message and relative time)
+  async getConversationsList(userId: string) {
+    const { data: details } = await this.supabase
+      .from('applicant_details')
+      .select('team_id, mentor_id, mentors (profile_id)')
+      .eq('profile_id', userId)
+      .single();
+
+    const teamId = details?.team_id;
+    const mentorProfileId = (details?.mentors as any)?.profile_id;
+
+    let contacts: any[] = [];
+
+    if (teamId) {
+      const { data: teamMembers } = await this.supabase
+        .from('applicant_details')
+        .select(`
+          profession,
+          profiles (id, first_name, last_name, avatar_url)
+        `)
+        .eq('team_id', teamId)
+        .neq('profile_id', userId);
+
+      if (teamMembers) {
+        contacts.push(...teamMembers.map((m: any) => ({
+          recipientId: m.profiles.id,
+          name: `${m.profiles.first_name} ${m.profiles.last_name}`,
+          profession: m.profession,
+          roleType: 'team-mate',
+          avatarUrl: m.profiles.avatar_url,
+        })));
+      }
+    }
+
+    if (mentorProfileId) {
+      const { data: mentorProfile } = await this.supabase
+        .from('profiles')
+        .select('id, first_name, last_name, avatar_url')
+        .eq('id', mentorProfileId)
+        .single();
+
+      const { data: mentorDetails } = await this.supabase
+        .from('mentors')
+        .select('profession')
+        .eq('profile_id', mentorProfileId)
+        .single();
+
+      if (mentorProfile) {
+        contacts.push({
+          recipientId: mentorProfile.id,
+          name: `${mentorProfile.first_name} ${mentorProfile.last_name}`,
+          profession: mentorDetails?.profession || 'Mentor',
+          roleType: 'mentor',
+          avatarUrl: mentorProfile.avatar_url,
+        });
+      }
+    }
+
+    const conversations = await Promise.all(
+      contacts.map(async (contact) => {
+        const { data: lastMsg } = await this.supabase
+          .from('messages')
+          .select('message, created_at')
+          .or(`and(sender_id.eq.${userId},recipient_id.eq.${contact.recipientId}),and(sender_id.eq.${contact.recipientId},recipient_id.eq.${userId})`)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+
+        const lastMessage = lastMsg ? lastMsg.message : 'No messages yet';
+        const createdAt = lastMsg ? lastMsg.created_at : null;
+
+        let timeAgo = 'New';
+        if (createdAt) {
+          const diffMs = Date.now() - new Date(createdAt).getTime();
+          const diffMins = Math.floor(diffMs / 60000);
+          const diffHours = Math.floor(diffMins / 60);
+          const diffDays = Math.floor(diffHours / 24);
+
+          if (diffMins < 1) timeAgo = 'Just now';
+          else if (diffMins < 60) timeAgo = `${diffMins} mins ago`;
+          else if (diffHours < 24) timeAgo = `${diffHours} hours ago`;
+          else timeAgo = `${diffDays} days ago`;
+        }
+
+        return {
+          ...contact,
+          lastMessage,
+          timeAgo,
+          lastMessageTimestamp: createdAt || '1970-01-01',
+        };
+      })
+    );
+
+    conversations.sort((a, b) => new Date(b.lastMessageTimestamp).getTime() - new Date(a.lastMessageTimestamp).getTime());
+
+    return { conversations };
+  }
+
+  // 3. GET CHAT THREAD (Recipient Info, Role Indication, Old & New Chats)
+  async getChatThread(userId: string, recipientId: string) {
+    const { data: profile } = await this.supabase
+      .from('profiles')
+      .select('first_name, last_name')
+      .eq('id', recipientId)
+      .single();
+
+    const { data: appDetail } = await this.supabase
+      .from('applicant_details')
+      .select('profession')
+      .eq('profile_id', recipientId)
+      .single();
+
+    let profession = appDetail?.profession;
+    let roleType = 'team-mate';
+
+    if (!profession) {
+      const { data: mentorDetail } = await this.supabase
+        .from('mentors')
+        .select('profession')
+        .eq('profile_id', recipientId)
+        .single();
+      if (mentorDetail) {
+        profession = mentorDetail.profession;
+        roleType = 'mentor';
+      }
+    }
+
+    const { data: messages } = await this.supabase
+      .from('messages')
+      .select('id, sender_id, message, created_at')
+      .or(`and(sender_id.eq.${userId},recipient_id.eq.${recipientId}),and(sender_id.eq.${recipientId},recipient_id.eq.${userId})`)
+      .order('created_at', { ascending: true });
+
+    const chats = messages?.map((m: any) => ({
+      id: m.id,
+      senderId: m.sender_id,
+      message: m.message,
+      createdAt: m.created_at,
+    })) || [];
+
+    return {
+      name: profile ? `${profile.first_name} ${profile.last_name}` : 'User',
+      profession: profession || 'Member',
+      roleType,
+      chats,
+    };
+  }
+
+  // 4. SEND MESSAGE
+  async sendMessage(userId: string, dto: SendMessageDto) {
+    const { data, error } = await this.supabase
+      .from('messages')
+      .insert({
+        sender_id: userId,
+        recipient_id: dto.recipientId,
+        message: dto.message,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    return {
+      message: 'Message sent successfully',
+      sentMessage: {
+        id: data.id,
+        senderId: data.sender_id,
+        recipientId: data.recipient_id,
+        message: data.message,
+        createdAt: data.created_at,
+      },
+    };
+  }
+
+  // GET CALENDAR AGENDA (Events, sessions, deadlines, payments from cohort start to end)
+  async getCalendarAgenda(userId: string) {
+    // 1. Get applicant's active cohort ID
+    const { data: applicantDetail } = await this.supabase
+      .from('applicant_details')
+      .select('cohort_id')
+      .eq('profile_id', userId)
+      .single();
+
+    const cohortId = applicantDetail?.cohort_id;
+
+    if (!cohortId) {
+      throw new NotFoundException('You are not assigned to an active cohort yet');
+    }
+
+    // 2. Fetch cohort-wide calendar events (Town Halls, Demo Days, etc.)
+    const { data: manualEvents } = await this.supabase
+      .from('cohort_calendar_events')
+      .select('*')
+      .eq('cohort_id', cohortId);
+
+    // 3. Fetch mentor sessions for the applicant
+    const { data: mentorSessions } = await this.supabase
+      .from('mentor_sessions')
+      .select('id, session_title, session_date, status')
+      .eq('profile_id', userId);
+
+    // 4. Fetch task deadlines for cohort teams
+    const { data: teams } = await this.supabase
+      .from('teams')
+      .select('id')
+      .eq('cohort_id', cohortId);
+
+    const teamIds = teams?.map((t) => t.id) || [];
+    let tasks: any[] = [];
+    if (teamIds.length > 0) {
+      const { data: taskData } = await this.supabase
+        .from('tasks')
+        .select('id, title, deadline')
+        .in('team_id', teamIds);
+      tasks = taskData || [];
+    }
+
+    // 5. Fetch payment milestones
+    const { data: payments } = await this.supabase
+      .from('payments')
+      .select('id, payment_title, created_at, status')
+      .eq('profile_id', userId);
+
+    // Combine all agenda sources
+    const agendaItems: any[] = [];
+
+    manualEvents?.forEach((ev) => {
+      agendaItems.push({
+        id: ev.id,
+        title: ev.title,
+        eventType: ev.event_type,
+        timestamp: ev.event_date,
+        description: ev.description,
+      });
+    });
+
+    mentorSessions?.forEach((s) => {
+      agendaItems.push({
+        id: s.id,
+        title: `Mentorship Session: ${s.session_title}`,
+        eventType: 'Session',
+        timestamp: s.session_date,
+        description: `Status: ${s.status}`,
+      });
+    });
+
+    tasks?.forEach((t) => {
+      agendaItems.push({
+        id: t.id,
+        title: `Deadline: ${t.title}`,
+        eventType: 'Deadline',
+        timestamp: t.deadline,
+        description: 'Team milestone deadline',
+      });
+    });
+
+    payments?.forEach((p) => {
+      agendaItems.push({
+        id: p.id,
+        title: `Payment: ${p.payment_title}`,
+        eventType: 'Payment',
+        timestamp: p.created_at,
+        description: `Status: ${p.status}`,
+      });
+    });
+
+    // Sort chronologically from cohort start to end
+    agendaItems.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    // Format day of week, date, and time
+    const formattedAgenda = agendaItems.map((item) => {
+      const dateObj = new Date(item.timestamp);
+      const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+      const dateStr = dateObj.toISOString().split('T')[0];
+      const timeStr = dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) + ' WAT';
+
+      return {
+        id: item.id,
+        title: item.title,
+        eventType: item.eventType,
+        dayOfWeek,
+        date: dateStr,
+        time: timeStr,
+        eventTimestamp: item.timestamp,
+        description: item.description,
+      };
+    });
+
+    return {
+      agenda: formattedAgenda,
+    };
+  }
+
+  
 }

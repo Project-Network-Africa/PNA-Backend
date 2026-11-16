@@ -12,12 +12,14 @@ import { MentorshipResponseDto } from './dto/mentorship-response.dto.js';
 import { MakePaymentDto, PaymentPageResponseDto } from './dto/payment.dto.js';
 import { LearningResourcesResponseDto, SearchLearningResourceQueryDto } from './dto/learning-resources-response.dto.js';
 import { NotificationsResponseDto } from './dto/notification-response.dto.js';
-import { UpdateSettingsDto } from './dto/settings.dto.js';
+import { UpdateSettingsDto, DeactivateAccountSuccessResponseDto } from './dto/settings.dto.js';
 import { EditProfileResponseDto, UpdateEditProfileDto } from './dto/edit-profile.dto.js';
 import { ConfirmScheduleSessionDto, ScheduleSessionViewResponseDto } from './dto/schedule-session.dto.js';
 import { OnboardingChecklistResponseDto } from './dto/onboarding-checklist.dto.js';
 import { PaymentConfirmationResponseDto } from './dto/payment-confirmation.dto.js';
 import { CohortOverviewResponseDto } from './dto/cohort-overview.dto.js';
+import { SendMessageDto, ConversationsListResponseDto, ChatThreadResponseDto } from './dto/messages.dto.js';
+import { CalendarResponseDto } from './dto/calendar-response.dto.js';
 
 
 @ApiTags('Applicant Portal')
@@ -271,5 +273,45 @@ export class ApplicantController {
   async confirmScheduleSession(@Req() req: any, @Body() dto: ConfirmScheduleSessionDto) {
     const userId = req.user?.id || req.headers['user-id'];
     return this.applicantService.confirmScheduleSession(userId, dto);
+  }
+
+  @Post('settings/deactivate')
+  @ApiOperation({ summary: 'Deactivate account when confirming deactivation, returning popup message "Your account has been deactivated"' })
+  @ApiResponse({ status: 201, description: 'Account deactivated.', type: DeactivateAccountSuccessResponseDto })
+  async deactivateAccount(@Req() req: any) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.deactivateAccount(userId);
+  }
+
+  @Get('messages')
+  @ApiOperation({ summary: 'Get conversations list with team-mates and mentor, last sent message, and relative time ago' })
+  @ApiResponse({ status: 200, description: 'Conversations retrieved successfully.', type: ConversationsListResponseDto })
+  async getConversations(@Req() req: any) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getConversationsList(userId);
+  }
+
+  @Get('messages/:recipientId')
+  @ApiOperation({ summary: 'Get message screen with recipient name, profession, mentor/team-mate indicator, and chat history' })
+  @ApiResponse({ status: 200, description: 'Chat thread retrieved successfully.', type: ChatThreadResponseDto })
+  async getChatThread(@Req() req: any, @Param('recipientId') recipientId: string) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getChatThread(userId, recipientId);
+  }
+
+  @Post('messages')
+  @ApiOperation({ summary: 'Send message using typing message bar and send button' })
+  @ApiResponse({ status: 201, description: 'Message sent successfully.' })
+  async sendMessage(@Req() req: any, @Body() dto: SendMessageDto) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.sendMessage(userId, dto);
+  }
+
+  @Get('calendar')
+  @ApiOperation({ summary: 'Get all upcoming cohort agenda (Events, sessions, deadlines, payments) with day, date, and time' })
+  @ApiResponse({ status: 200, description: 'Calendar agenda retrieved successfully.', type: CalendarResponseDto })
+  async getCalendarAgenda(@Req() req: any) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getCalendarAgenda(userId);
   }
 }

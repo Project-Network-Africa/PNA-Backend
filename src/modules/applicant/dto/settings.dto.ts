@@ -42,3 +42,11 @@ export class UpdateSettingsDto {
   @IsBoolean()
   allowAnalyticsCookies?: boolean;
 }
+
+export class DeactivateAccountSuccessResponseDto {
+  @ApiProperty({ example: 'Your account has been deactivated' })
+  popupMessage: string;
+
+  @ApiProperty({ example: false })
+  isActive: boolean;
+}
