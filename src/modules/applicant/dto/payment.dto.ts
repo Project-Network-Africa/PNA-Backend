@@ -59,7 +59,7 @@ class PaymentHistoryItemDto {
   @ApiProperty({ example: 'Paystack' })
   paymentMethod: string;
 
-  @ApiProperty({ example: 'https://api.pnafrica.org/receipts/pay-uuid-001.pdf', nullable: true })
+  @ApiProperty({ example: 'https://api.pnafrica.com/receipts/pay-uuid-001.pdf', nullable: true })
   receiptDownloadUrl: string | null;
 
   @ApiProperty({ example: '2026-07-15T12:00:00.000Z' })

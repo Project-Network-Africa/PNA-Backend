@@ -12,7 +12,7 @@ export class EmailService {
   async sendEmail(to: string, subject: string, html: string) {
     try {
       const data = await this.resend.emails.send({
-        from: process.env.EMAIL_FROM || 'noreply@pnafrica.org',
+        from: `PN Africa <${process.env.EMAIL_FROM || 'noreply@pnafrica.com'}>`,
         to,
         subject,
         html,
@@ -48,13 +48,45 @@ export class EmailService {
     return this.sendEmail(email, `New Session Scheduled - ${sessionTitle}`, html);
   }
 
-  async sendVerificationEmail(email: string, token: string) {
+  async sendVerificationEmail(email: string, firstName: string, verificationLink: string) {
     const html = `
-      <h2>Verify Your Email</h2>
-      <p>Welcome to PN Africa! Please verify your email using the token below:</p>
-      <h3>${token}</h3>
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
+        <h2 style="color: #111827;">Welcome to PN Africa, ${firstName}!</h2>
+        <p style="color: #4b5563; font-size: 16px; line-height: 1.5;">
+          Thank you for registering on the PN Africa Talent Platform. Click the button below to verify your email address and activate your account:
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${verificationLink}" 
+             style="background-color: #2563eb; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; display: inline-block;">
+            Verify Account
+          </a>
+        </div>
+        <p style="color: #6b7280; font-size: 13px;">
+          If the button doesn't work, copy and paste this link into your browser:<br/>
+          <a href="${verificationLink}" style="color: #2563eb;">${verificationLink}</a>
+        </p>
+      </div>
     `;
-    return this.sendEmail(email, 'Verify Your Email - PN Africa', html);
+    return this.sendEmail(email, 'Verify Your Account - PN Africa', html);
+  }
+
+  async sendPaymentConfirmationEmail(email: string, firstName: string, amount: number, paymentMethod: string, reference: string, date: string, status: string) {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
+        <h2 style="color: #10b981;">Payment Successful!</h2>
+        <p style="color: #4b5563; font-size: 16px;">Hello ${firstName},</p>
+        <p style="color: #4b5563; font-size: 16px;">We have successfully received your payment of ₦${amount.toLocaleString()}.</p>
+        <div style="background-color: #f9fafb; padding: 16px; border-radius: 6px; margin: 20px 0;">
+          <p style="margin: 6px 0;"><strong>Transaction ID:</strong> ${reference}</p>
+          <p style="margin: 6px 0;"><strong>Date:</strong> ${date}</p>
+          <p style="margin: 6px 0;"><strong>Amount Paid:</strong> ₦${amount.toLocaleString()}</p>
+          <p style="margin: 6px 0;"><strong>Payment Method:</strong> ${paymentMethod}</p>
+          <p style="margin: 6px 0;"><strong>Status:</strong> ${status}</p>
+        </div>
+        <p style="color: #6b7280; font-size: 13px;">Thank you for being part of PN Africa.</p>
+      </div>
+    `;
+    return this.sendEmail(email, 'Payment Receipt & Confirmation - PN Africa', html);
   }
 
   async sendPasswordResetEmail(email: string, token: string) {

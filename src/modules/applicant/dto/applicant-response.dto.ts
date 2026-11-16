@@ -27,7 +27,7 @@ class MentorSummaryDto {
   @ApiProperty({ example: 'Senior Fullstack Engineer' })
   profession: string;
 
-  @ApiProperty({ example: 'jane.smith@pnafrica.org' })
+  @ApiProperty({ example: 'jane.smith@pnafrica.com' })
   email: string;
 
   @ApiProperty({ example: '/messages/mentor/uuid-here' })

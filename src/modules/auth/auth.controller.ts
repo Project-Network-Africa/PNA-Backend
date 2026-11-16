@@ -1,8 +1,9 @@
-import { Controller, Post, Body, Query, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { Controller, Post, Get, Body, Query, HttpCode, HttpStatus, Res } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { AuthService } from './auth.service.js';
 import { SignUpDto, LoginDto, ForgotPasswordDto, ResetPasswordDto } from './dto/auth.dto.js';
 import { AuthMessageResponseDto, LoginResponseDto } from './dto/auth-response.dto.js';
+import type { Response } from 'express';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -13,16 +14,27 @@ export class AuthController {
   @ApiOperation({ summary: 'Register a new Applicant or Mentor' })
   @ApiResponse({
     status: 201,
-    description: 'User registered successfully & verification email sent.',
+    description: 'Registration successful! Please check your email and click the Verify Account button.',
     type: AuthMessageResponseDto,
   })
   async signup(@Body() dto: SignUpDto) {
     return this.authService.signup(dto);
   }
 
+  @Get('verify-email')
+  @ApiOperation({ summary: 'Auto-verify user email when clicking the email button and redirect to login' })
+  @ApiQuery({ name: 'token', required: true })
+  async verifyEmail(@Query('token') token: string, @Res() res: Response) {
+    await this.authService.verifyAccountByLink(token);
+
+    // Redirect user straight to your frontend login page with a verified flag
+    const frontendLoginUrl = `${process.env.FRONTEND_URL || 'https://pnafrica.org'}/login?verified=true`;
+    return res.redirect(frontendLoginUrl);
+  }
+
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Login user with email and password' })
+  @ApiOperation({ summary: 'Log in after verifying email' })
   @ApiResponse({
     status: 200,
     description: 'User logged in successfully with JWT token returned.',

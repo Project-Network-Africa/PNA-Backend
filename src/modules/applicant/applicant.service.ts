@@ -152,6 +152,85 @@ export class ApplicantService {
     };
   }
 
+  // 2. GET COHORT OVERVIEW
+  async getCohortOverview(userId: string) {
+    const { data: details, error } = await this.supabase
+      .from('applicant_details')
+      .select(`
+        profession,
+        cohorts (id, name, start_date, end_date, project_deadline),
+        mentors (
+          profession,
+          profiles (first_name, last_name, avatar_url)
+        )
+      `)
+      .eq('profile_id', userId)
+      .single();
+
+    if (error || !details) {
+      throw new NotFoundException('Applicant details not found');
+    }
+
+    const cohort = details.cohorts as any;
+    const mentor = details.mentors as any;
+
+    let weeksRemainingLabel = 'Week 8 of 12';
+    let progressPercentage = 66;
+
+    if (cohort && cohort.start_date && cohort.project_deadline) {
+      const start = new Date(cohort.start_date).getTime();
+      const deadline = new Date(cohort.project_deadline).getTime();
+      const now = Date.now();
+      const totalDuration = deadline - start;
+      const elapsed = now - start;
+
+      const totalWeeks = Math.max(1, Math.ceil(totalDuration / (7 * 24 * 60 * 60 * 1000)));
+      const currentWeek = Math.min(totalWeeks, Math.max(1, Math.ceil(elapsed / (7 * 24 * 60 * 60 * 1000))));
+
+      weeksRemainingLabel = `Week ${currentWeek} of ${totalWeeks}`;
+      progressPercentage = Math.round((currentWeek / totalWeeks) * 100);
+    }
+
+    let curriculumSchedule: any[] = [];
+    if (cohort?.id) {
+      const { data: modules } = await this.supabase
+        .from('curriculum_modules')
+        .select('id, title, status, order_index')
+        .eq('cohort_id', cohort.id)
+        .order('order_index', { ascending: true });
+
+      curriculumSchedule = modules?.map((m: any) => ({
+        id: m.id,
+        title: m.title,
+        status: m.status,
+      })) || [];
+    }
+
+    if (curriculumSchedule.length === 0) {
+      curriculumSchedule = [
+        { id: '1', title: 'Module 1: Foundation & Setup', status: 'Completed' },
+        { id: '2', title: 'Module 2: Core Architecture', status: 'Completed' },
+        { id: '3', title: 'Module 3: Advanced Integration', status: 'In Progress' },
+        { id: '4', title: 'Module 4: Final Capstone & Polish', status: 'Upcoming' },
+      ];
+    }
+
+    const teamMentors = mentor ? [{
+      mentorName: `${mentor.profiles?.first_name || ''} ${mentor.profiles?.last_name || ''}`.trim(),
+      profession: mentor.profession,
+      avatarUrl: mentor.profiles?.avatar_url || null,
+    }] : [];
+
+    return {
+      registeredProfession: details.profession,
+      cohortName: cohort?.name || 'Active Cohort',
+      weeksRemainingLabel,
+      progressPercentage,
+      curriculumSchedule,
+      teamMentors,
+    };
+  }
+
   async getApplicationStatus(userId: string) {
     const { data: details, error } = await this.supabase
       .from('applicant_details')
@@ -654,7 +733,7 @@ export class ApplicantService {
         payment_method: dto.paymentMethod,
         status: paymentStatus,
         reference: transactionReference,
-        receipt_url: `https://api.pnafrica.org/applicant/payments/receipt/${transactionReference}.pdf`,
+        receipt_url: `https://api.pnafrica.com/applicant/payments/receipt/${transactionReference}.pdf`,
       })
       .select()
       .single();
@@ -676,6 +755,16 @@ export class ApplicantService {
         .eq('profile_id', userId);
     }
 
+    await this.emailService.sendPaymentConfirmationEmail(
+        profile.email,
+        profile.first_name,
+        dto.amount,
+        dto.paymentMethod,
+        transactionReference,
+        new Date().toLocaleString(),
+        'Paid',
+    );
+
     return {
       message: paymentStatus === 'Successful' ? `Successfully paid ₦${dto.amount} with ${dto.paymentMethod}` : 'Payment initialization failed',
       status: paymentStatus,
@@ -685,6 +774,38 @@ export class ApplicantService {
       receiptDownloadUrl: paymentRecord.receipt_url,
     };
   }
+
+  // 1. GET PAYMENT CONFIRMATION RECEIPT
+  async getPaymentConfirmation(userId: string, paymentId: string) {
+    const { data: payment, error } = await this.supabase
+      .from('payments')
+      .select('*')
+      .eq('id', paymentId)
+      .eq('profile_id', userId)
+      .single();
+
+    if (error || !payment) {
+      throw new NotFoundException('Payment record not found');
+    }
+
+    const isSuccessful = payment.status === 'Successful';
+
+    return {
+      paymentSuccessful: isSuccessful,
+      statusMessage: isSuccessful ? 'Payment successful with a check mark' : 'Payment unsuccessful',
+      receipt: {
+        transactionId: payment.reference || payment.id,
+        date: payment.created_at,
+        amount: Number(payment.amount_paid),
+        paymentMethod: payment.payment_method,
+        status: isSuccessful ? 'paid' : 'unsuccessful',
+        downloadReceiptUrl: payment.receipt_url || `https://api.pnafrica.org/receipts/${payment.id}.pdf`,
+      },
+      backToPaymentUrl: '/applicant/payments',
+    };
+  }
+
+  
 
   // 1. GET LEARNING RESOURCES (With optional search bar filtering)
   async getLearningResources(searchQuery?: string) {
@@ -830,7 +951,7 @@ export class ApplicantService {
       policyTitle: 'PN Africa Privacy Policy',
       lastUpdated: '2026-01-01',
       summary: 'PN Africa respects your privacy and is committed to protecting your personal data in accordance with global data protection regulations.',
-      fullTextUrl: 'https://pnafrica.org/privacy-policy',
+      fullTextUrl: 'https://pnafrica.com/privacy-policy',
     };
   }
 

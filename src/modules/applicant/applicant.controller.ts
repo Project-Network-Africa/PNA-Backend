@@ -16,6 +16,8 @@ import { UpdateSettingsDto } from './dto/settings.dto.js';
 import { EditProfileResponseDto, UpdateEditProfileDto } from './dto/edit-profile.dto.js';
 import { ConfirmScheduleSessionDto, ScheduleSessionViewResponseDto } from './dto/schedule-session.dto.js';
 import { OnboardingChecklistResponseDto } from './dto/onboarding-checklist.dto.js';
+import { PaymentConfirmationResponseDto } from './dto/payment-confirmation.dto.js';
+import { CohortOverviewResponseDto } from './dto/cohort-overview.dto.js';
 
 
 @ApiTags('Applicant Portal')
@@ -95,6 +97,14 @@ export class ApplicantController {
     return this.applicantService.getProjectDetails(userId, projectId);
   }
 
+  @Get('cohort/overview')
+  @ApiOperation({ summary: 'Get cohort overview (registered profession, cohort name, progress bar weeks remaining, curriculum schedule, and team mentors)' })
+  @ApiResponse({ status: 200, description: 'Cohort overview retrieved.', type: CohortOverviewResponseDto })
+  async getCohortOverview(@Req() req: any) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getCohortOverview(userId);
+  }
+
   @Get('team/workspace')
   @ApiOperation({ summary: 'Get team workspace details (All team members with professions, and shared downloadable files)' })
   @ApiResponse({
@@ -151,6 +161,14 @@ export class ApplicantController {
   async makePayment(@Req() req: any, @Body() dto: MakePaymentDto) {
     const userId = req.user?.id || req.headers['user-id'];
     return this.applicantService.processPayment(userId, dto);
+  }
+
+  @Get('payments/confirmation/:paymentId')
+  @ApiOperation({ summary: 'Get payment confirmation details, receipt (transaction id, date, amount, method, status), and download URL' })
+  @ApiResponse({ status: 200, description: 'Payment confirmation retrieved.', type: PaymentConfirmationResponseDto })
+  async getPaymentConfirmation(@Req() req: any, @Param('paymentId') paymentId: string) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getPaymentConfirmation(userId, paymentId);
   }
 
   @Get('resources')
