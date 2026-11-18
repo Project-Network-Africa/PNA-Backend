@@ -89,6 +89,28 @@ export class EmailService {
     return this.sendEmail(email, 'Payment Receipt & Confirmation - PN Africa', html);
   }
 
+  async sendReferralInviteEmail(recipientEmail: string, referrerName: string, referralLink: string) {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
+        <h2 style="color: #111827;">You've Been Invited to Join PN Africa!</h2>
+        <p style="color: #4b5563; font-size: 16px; line-height: 1.5;">
+          <strong>${referrerName}</strong> invited you to accelerate your tech career with real-world team projects and dedicated mentorship on PN Africa.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${referralLink}" 
+             style="background-color: #2563eb; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; display: inline-block;">
+            Accept Invitation & Apply
+          </a>
+        </div>
+        <p style="color: #6b7280; font-size: 13px;">
+          Or use this referral link:<br/>
+          <a href="${referralLink}" style="color: #2563eb;">${referralLink}</a>
+        </p>
+      </div>
+    `;
+    return this.sendEmail(recipientEmail, `${referrerName} invited you to PN Africa`, html);
+  }
+
   async sendPasswordResetEmail(email: string, token: string) {
     const html = `
       <h2>Password Reset Request</h2>

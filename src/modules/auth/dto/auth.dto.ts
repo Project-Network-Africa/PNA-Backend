@@ -73,3 +73,10 @@ export class ResetPasswordDto {
   @IsNotEmpty()
   confirmPassword: string;
 }
+
+export class ResendVerificationDto {
+  @ApiProperty({ example: 'applicant@example.com' })
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+}

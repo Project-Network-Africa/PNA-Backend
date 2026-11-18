@@ -9,7 +9,8 @@ import { UpdateEditProfileDto } from './dto/edit-profile.dto.js';
 import { EmailService } from '../email/email.service.js';
 import { ConfirmScheduleSessionDto } from './dto/schedule-session.dto.js';
 import { SendMessageDto } from './dto/messages.dto.js';
-
+import { SendReferralInviteDto } from './dto/referral.dto.js';
+import { CreateSupportTicketDto } from './dto/support.dto.js';
 
 @Injectable()
 @Injectable()
@@ -1499,5 +1500,251 @@ export class ApplicantService {
     };
   }
 
-  
+  async getAchievements(userId: string) {
+    // Fetch current & past badges
+    const { data: badgesData } = await this.supabase
+      .from('applicant_badges')
+      .select('id, badge_name, description, earned_at, cohorts (name)')
+      .eq('profile_id', userId)
+      .order('earned_at', { ascending: false });
+
+    const badges = badgesData?.map((b: any) => ({
+      id: b.id,
+      badgeName: b.badge_name,
+      description: b.description || '',
+      cohortName: b.cohorts?.name || 'Cohort',
+      earnedAt: b.earned_at,
+    })) || [];
+
+    // Check course completion percentage
+    const { data: details } = await this.supabase
+      .from('applicant_details')
+      .select('completion_percentage, cohort_id')
+      .eq('profile_id', userId)
+      .single();
+
+    const completion = Number(details?.completion_percentage || 0);
+    const isUnlocked = completion >= 100;
+
+    let downloadUrl: string | null = null;
+    if (isUnlocked && details?.cohort_id) {
+      const { data: cert } = await this.supabase
+        .from('applicant_certificates')
+        .select('certificate_url')
+        .eq('profile_id', userId)
+        .eq('cohort_id', details.cohort_id)
+        .single();
+
+      downloadUrl = cert?.certificate_url || `https://api.pnafrica.org/certificates/${userId}-${details.cohort_id}.pdf`;
+    }
+
+    return {
+      badges,
+      programCertificate: {
+        title: 'Downloadable Cohort Certificate',
+        isLocked: !isUnlocked,
+        currentCompletionPercentage: completion,
+        downloadUrl,
+      },
+    };
+  }
+
+  // ==========================================
+  // 2. REFERRAL PROGRAM PAGE
+  // ==========================================
+  async getReferralData(userId: string) {
+    const { data: profile } = await this.supabase
+      .from('profiles')
+      .select('first_name, last_name')
+      .eq('id', userId)
+      .single();
+
+    const slugName = `${profile?.first_name || 'applicant'}-${profile?.last_name || ''}`
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '-');
+
+    const referralLink = `https://pnafrica.com/refer/${slugName}`;
+
+    // Fetch all referrals sent by applicant
+    const { data: referrals } = await this.supabase
+      .from('referrals')
+      .select('referred_email, status, created_at')
+      .eq('referrer_id', userId)
+      .order('created_at', { ascending: false });
+
+    const invitedList = referrals?.map((r: any) => ({
+      email: r.referred_email,
+      status: r.status,
+      sentAt: r.created_at,
+    })) || [];
+
+    // Count how many referred friends have joined (Target: 3)
+    const joinedCount = referrals?.filter((r: any) => r.status === 'Joined').length || 0;
+    const targetCount = 3;
+    const cappedJoined = Math.min(joinedCount, targetCount);
+    const progressPercentage = Math.round((cappedJoined / targetCount) * 100);
+    const rewardUnlocked = joinedCount >= targetCount;
+
+    // Automatically credit 1 free month of mentorship if 3 friends joined and not yet credited
+    if (rewardUnlocked) {
+      const { data: details } = await this.supabase
+        .from('applicant_details')
+        .select('mentorship_credits_months')
+        .eq('profile_id', userId)
+        .single();
+
+      if (details && details.mentorship_credits_months === 0) {
+        await this.supabase
+          .from('applicant_details')
+          .update({ mentorship_credits_months: 1 })
+          .eq('profile_id', userId);
+      }
+    }
+
+    return {
+      referralLink,
+      rewardProgress: {
+        joinedCount,
+        targetCount,
+        progressPercentage,
+        rewardUnlocked,
+        rewardTitle: '1 Free Month of Mentorship Credits',
+      },
+      invitedList,
+    };
+  }
+
+  async sendReferralInvite(userId: string, dto: SendReferralInviteDto) {
+    const { data: profile } = await this.supabase
+      .from('profiles')
+      .select('first_name, last_name, email')
+      .eq('id', userId)
+      .single();
+
+    if (!profile) {
+      throw new BadRequestException('Applicant profile not found');
+    }
+
+    if (profile.email.toLowerCase() === dto.email.toLowerCase()) {
+      throw new BadRequestException('You cannot refer yourself');
+    }
+
+    // Check if already invited
+    const { data: existing } = await this.supabase
+      .from('referrals')
+      .select('id')
+      .eq('referrer_id', userId)
+      .eq('referred_email', dto.email)
+      .single();
+
+    if (existing) {
+      throw new BadRequestException('You have already sent an invitation to this email');
+    }
+
+    const slugName = `${profile.first_name}-${profile.last_name}`
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '-');
+    const referralLink = `https://pnafrica.com/refer/${slugName}`;
+
+    // Save referral record
+    const { error } = await this.supabase.from('referrals').insert({
+      referrer_id: userId,
+      referred_email: dto.email,
+      status: 'Pending',
+    });
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    // Send invitation email with referral link via Resend
+    await this.emailService.sendReferralInviteEmail(
+      dto.email,
+      `${profile.first_name} ${profile.last_name}`,
+      referralLink,
+    );
+
+    return {
+      message: `Invitation email sent to ${dto.email}`,
+      referralLink,
+    };
+  }
+
+  // ==========================================
+  // 3. HELP AND SUPPORT PAGE
+  // ==========================================
+  async getHelpAndSupport(userId: string) {
+    // Fetch FAQs
+    const { data: faqsData } = await this.supabase
+      .from('support_faqs')
+      .select('id, question, answer')
+      .order('order_index', { ascending: true });
+
+    const faqs = faqsData && faqsData.length > 0
+      ? faqsData
+      : [
+          {
+            id: 'default-1',
+            question: 'How do I unlock my Cohort Certificate?',
+            answer: 'Your Downloadable Cohort Certificate automatically unlocks once your course completion reaches 100%.',
+          },
+          {
+            id: 'default-2',
+            question: 'How does the Referral Program work?',
+            answer: 'Share your personal referral link or invite friends via email. Once 3 referred friends join, your reward bar fills up and unlocks 1 free month of mentorship credits.',
+          },
+        ];
+
+    // Fetch applicant's support tickets
+    const { data: ticketsData } = await this.supabase
+      .from('support_tickets')
+      .select('id, subject, message, status, admin_reply, created_at')
+      .eq('profile_id', userId)
+      .order('created_at', { ascending: false });
+
+    const supportTickets = ticketsData?.map((t: any) => ({
+      id: t.id,
+      subject: t.subject,
+      message: t.message,
+      status: t.status,
+      isResolved: t.status === 'Resolved',
+      adminReply: t.admin_reply || null,
+      createdAt: t.created_at,
+    })) || [];
+
+    return {
+      faqs,
+      supportTickets,
+    };
+  }
+
+  async createSupportTicket(userId: string, dto: CreateSupportTicketDto) {
+    const { data, error } = await this.supabase
+      .from('support_tickets')
+      .insert({
+        profile_id: userId,
+        subject: dto.subject,
+        message: dto.message,
+        status: 'Open',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    return {
+      message: 'Support ticket submitted successfully. The PNA team will respond shortly.',
+      ticket: {
+        id: data.id,
+        subject: data.subject,
+        status: data.status,
+        isResolved: false,
+        createdAt: data.created_at,
+      },
+    };
+  }
 }

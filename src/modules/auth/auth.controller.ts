@@ -1,7 +1,7 @@
 import { Controller, Post, Get, Body, Query, HttpCode, HttpStatus, Res } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { AuthService } from './auth.service.js';
-import { SignUpDto, LoginDto, ForgotPasswordDto, ResetPasswordDto } from './dto/auth.dto.js';
+import { SignUpDto, LoginDto, ForgotPasswordDto, ResetPasswordDto, ResendVerificationDto } from './dto/auth.dto.js';
 import { AuthMessageResponseDto, LoginResponseDto } from './dto/auth-response.dto.js';
 import type { Response } from 'express';
 
@@ -28,8 +28,14 @@ export class AuthController {
     await this.authService.verifyAccountByLink(token);
 
     // Redirect user straight to your frontend login page with a verified flag
-    const frontendLoginUrl = `${process.env.FRONTEND_URL || 'https://pnafrica.org'}/login?verified=true`;
+    const frontendLoginUrl = `${process.env.FRONTEND_URL || 'https://pnafrica.com'}/login?verified=true`;
     return res.redirect(frontendLoginUrl);
+  }
+
+  @Post('resend-verification')
+  @ApiOperation({ summary: 'Resend email verification button link if the previous email expired or was not received' })
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerificationEmail(dto);
   }
 
   @Post('login')

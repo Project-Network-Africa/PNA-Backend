@@ -20,6 +20,9 @@ import { PaymentConfirmationResponseDto } from './dto/payment-confirmation.dto.j
 import { CohortOverviewResponseDto } from './dto/cohort-overview.dto.js';
 import { SendMessageDto, ConversationsListResponseDto, ChatThreadResponseDto } from './dto/messages.dto.js';
 import { CalendarResponseDto } from './dto/calendar-response.dto.js';
+import { AchievementsResponseDto } from './dto/achievements.dto.js';
+import { ReferralPageResponseDto, SendReferralInviteDto } from './dto/referral.dto.js';
+import { HelpAndSupportResponseDto, CreateSupportTicketDto } from './dto/support.dto.js';
 
 
 @ApiTags('Applicant Portal')
@@ -313,5 +316,45 @@ export class ApplicantController {
   async getCalendarAgenda(@Req() req: any) {
     const userId = req.user?.id || req.headers['user-id'];
     return this.applicantService.getCalendarAgenda(userId);
+  }
+
+  @Get('achievements')
+  @ApiOperation({ summary: 'Get earned badges (current & past cohorts) and Program Certificate (locked until 100% completion)' })
+  @ApiResponse({ status: 200, description: 'Achievements retrieved successfully.', type: AchievementsResponseDto })
+  async getAchievements(@Req() req: any) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getAchievements(userId);
+  }
+
+  @Get('referrals')
+  @ApiOperation({ summary: 'Get personal referral link, reward progress bar (3 joins = 1 free mentorship month), and invited friends list' })
+  @ApiResponse({ status: 200, description: 'Referral program data retrieved.', type: ReferralPageResponseDto })
+  async getReferrals(@Req() req: any) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getReferralData(userId);
+  }
+
+  @Post('referrals/invite')
+  @ApiOperation({ summary: 'Send an email invitation containing the applicant referral link' })
+  @ApiResponse({ status: 201, description: 'Referral invitation email sent.' })
+  async sendReferralInvite(@Req() req: any, @Body() dto: SendReferralInviteDto) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.sendReferralInvite(userId, dto);
+  }
+
+  @Get('support')
+  @ApiOperation({ summary: 'Get FAQs and applicant support tickets with resolved/unresolved status' })
+  @ApiResponse({ status: 200, description: 'Help and support data retrieved.', type: HelpAndSupportResponseDto })
+  async getHelpAndSupport(@Req() req: any) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.getHelpAndSupport(userId);
+  }
+
+  @Post('support/tickets')
+  @ApiOperation({ summary: 'Contact support button action to submit a new support ticket to the PNA team' })
+  @ApiResponse({ status: 201, description: 'Support ticket created successfully.' })
+  async createSupportTicket(@Req() req: any, @Body() dto: CreateSupportTicketDto) {
+    const userId = req.user?.id || req.headers['user-id'];
+    return this.applicantService.createSupportTicket(userId, dto);
   }
 }

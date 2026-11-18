@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { EmailService } from '../email/email.service.js';
-import { SignUpDto, LoginDto, ForgotPasswordDto, ResetPasswordDto } from './dto/auth.dto.js';
+import { SignUpDto, LoginDto, ForgotPasswordDto, ResetPasswordDto, ResendVerificationDto } from './dto/auth.dto.js';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 
@@ -94,6 +94,47 @@ export class AuthService {
     } catch (err) {
       throw new BadRequestException('Verification link has expired or is invalid.');
     }
+  }
+
+  async resendVerificationEmail(dto: ResendVerificationDto) {
+    // 1. Locate user by email using Supabase Admin API
+    const { data: listUsers, error: listError } = await this.supabaseAdmin.auth.admin.listUsers();
+    if (listError) {
+      throw new BadRequestException('Failed to lookup user');
+    }
+
+    const user = listUsers.users.find((u) => u.email?.toLowerCase() === dto.email.toLowerCase());
+
+    if (!user) {
+      throw new BadRequestException('User with this email does not exist');
+    }
+
+    if (user.email_confirmed_at) {
+      throw new BadRequestException('Email is already verified. Please log in.');
+    }
+
+    // 2. Generate a new signed JWT verification token (24-hour expiration)
+    const verifyToken = this.jwtService.sign(
+      { sub: user.id, email: user.email, purpose: 'email-verification' },
+      { expiresIn: '24h' },
+    );
+
+    // 3. Construct backend verification URL
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3300';
+    const verificationLink = `${backendUrl}/auth/verify-email?token=${verifyToken}`;
+
+    const firstName = user.user_metadata?.first_name || 'Applicant';
+
+    // 4. Send branded verification email via Resend from noreply@pnafrica.org
+    await this.emailService.sendVerificationEmail(
+      user.email!,
+      firstName,
+      verificationLink,
+    );
+
+    return {
+      message: 'Verification email resent successfully. Please check your inbox and click the Verify Account button.',
+    };
   }
 
   // 2. LOGIN FLOW
