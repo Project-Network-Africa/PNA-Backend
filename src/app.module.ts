@@ -5,13 +5,14 @@ import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { ApplicantModule } from './modules/applicant/applicant.module.js';
 import { EmailModule } from './modules/email/email.module.js';
-
+import { MentorModule } from './modules/mentor/mentor.module.js';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ApplicantModule,
     AuthModule,
     EmailModule,
+    MentorModule,
   ],
   controllers: [AppController],
   providers: [AppService],
