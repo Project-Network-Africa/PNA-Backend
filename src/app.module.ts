@@ -6,6 +6,8 @@ import { AuthModule } from './modules/auth/auth.module.js';
 import { ApplicantModule } from './modules/applicant/applicant.module.js';
 import { EmailModule } from './modules/email/email.module.js';
 import { MentorModule } from './modules/mentor/mentor.module.js';
+import { ApplicationModule } from './modules/application/application.module.js';
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -13,6 +15,7 @@ import { MentorModule } from './modules/mentor/mentor.module.js';
     AuthModule,
     EmailModule,
     MentorModule,
+    ApplicationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

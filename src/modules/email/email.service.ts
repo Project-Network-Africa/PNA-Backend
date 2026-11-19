@@ -127,4 +127,64 @@ export class EmailService {
     `;
     return this.sendEmail(email, 'Data Deletion Request Received - PN Africa', html);
   }
+
+  async sendApplicationSubmissionEmails(
+    applicantEmail: string,
+    applicantName: string,
+    referenceCode: string,
+    cohortName: string,
+    track: string,
+  ) {
+    // 1. Email to Applicant
+    const applicantHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
+        <h2 style="color: #2563eb;">Application Submitted Successfully!</h2>
+        <p style="color: #4b5563; font-size: 16px;">Hello ${applicantName},</p>
+        <p style="color: #4b5563; font-size: 16px;">
+          We have successfully received your application for <strong>${track}</strong> in <strong>${cohortName}</strong>.
+        </p>
+        <div style="background-color: #f9fafb; padding: 16px; border-radius: 6px; margin: 20px 0; text-align: center;">
+          <p style="margin: 0; font-size: 14px; color: #6b7280;">Your Application Reference Code:</p>
+          <p style="margin: 8px 0 0 0; font-size: 24px; font-weight: bold; color: #111827;">${referenceCode}</p>
+        </div>
+        <p style="color: #6b7280; font-size: 13px;">You can use this reference code to track your application status. Our admissions team is reviewing your profile.</p>
+      </div>
+    `;
+    await this.sendEmail(applicantEmail, `Application Received - ${referenceCode} - PN Africa`, applicantHtml);
+
+    // 2. Emails to PN-Africa Review Teams
+    const reviewEmails = ['pna-report@googlegroups.com', 'projectnetworkafrica@gmail.com'];
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
+        <h2 style="color: #111827;">New Application Submission</h2>
+        <p><strong>Applicant:</strong> ${applicantName} (${applicantEmail})</p>
+        <p><strong>Track:</strong> ${track}</p>
+        <p><strong>Cohort:</strong> ${cohortName}</p>
+        <p><strong>Reference Code:</strong> ${referenceCode}</p>
+        <p>Please log in to the admin dashboard to review applicant details.</p>
+      </div>
+    `;
+    for (const email of reviewEmails) {
+      await this.sendEmail(email, `New Application: ${referenceCode} (${track})`, adminHtml);
+    }
+  }
+
+  async sendAdmissionAcceptanceEmail(applicantEmail: string, applicantName: string, registrationLink: string) {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
+        <h2 style="color: #10b981;">Congratulations, ${applicantName}!</h2>
+        <p style="color: #4b5563; font-size: 16px; line-height: 1.5;">
+          Your application to PN Africa has been reviewed and <strong>Accepted</strong>! You are now eligible to set up your portal and begin your onboarding.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${registrationLink}" 
+             style="background-color: #2563eb; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; display: inline-block;">
+            Create Your Portal
+          </a>
+        </div>
+        <p style="color: #6b7280; font-size: 13px;">Welcome aboard!</p>
+      </div>
+    `;
+    return this.sendEmail(applicantEmail, 'Congratulations! Your PN Africa Application Was Accepted', html);
+  } 
 }
