@@ -2,19 +2,24 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export enum TrackEnum {
-  PRODUCT_DESIGN = 'Product design',
-  FRONTEND_DEV = 'Frontend developer',
-  BACKEND_DEV = 'backend developer',
-  PRODUCT_MANAGER = 'product manager',
-  BUSINESS_ANALYST = 'Business analyst',
-  PROJECT_COORDINATOR = 'project coordinator',
-  PROJECT_MANAGER = 'project manager',
+  PRODUCT_DESIGNER = 'PRODUCT_DESIGNER',
+  FRONTEND_DEVELOPER = 'FRONTEND_DEVELOPER',
+  BACKEND_DEVELOPER = 'BACKEND_DEVELOPER',
+  PRODUCT_MANAGER = 'PRODUCT_MANAGER',
+  BUSINESS_ANALYST = 'BUSINESS_ANALYST',
+  PROJECT_COORDINATOR = 'PROJECT_COORDINATOR',
+  PROJECT_MANAGER = 'PROJECT_MANAGER',
 }
 
 export enum ExperienceLevelEnum {
   BEGINNER = 'Beginner',
   SOME_EXPERIENCE = 'Some Experience',
   EXPERIENCED = 'Experienced',
+}
+
+export enum PaymentMethodEnum {
+  PAYSTACK = 'Paystack',
+  NESTUGE = 'Nestuge',
 }
 
 export class PersonalInfoStageDto {
@@ -45,12 +50,12 @@ export class PersonalInfoStageDto {
 }
 
 export class ProgramSelectionStageDto {
-  @ApiProperty({ enum: TrackEnum, example: TrackEnum.BACKEND_DEV })
+  @ApiProperty({ enum: TrackEnum, example: TrackEnum.BACKEND_DEVELOPER })
   @IsEnum(TrackEnum)
   @IsNotEmpty()
   track: TrackEnum;
 
-  @ApiProperty({ example: 'Cohort 4 - Match, 2027' })
+  @ApiProperty({ example: 'Cohort 4 - March, 2027' })
   @IsString()
   @IsNotEmpty()
   cohortName: string;
@@ -89,14 +94,14 @@ export class ExperiencePortfolioStageDto {
 }
 
 export class ReviewAndPaymentStageDto {
-  @ApiProperty({ example: 'Paystack' })
-  @IsString()
+  @ApiProperty({ enum: PaymentMethodEnum, example: PaymentMethodEnum.PAYSTACK })
+  @IsEnum(PaymentMethodEnum)
   @IsNotEmpty()
-  paymentMethod: string;
+  paymentMethod: PaymentMethodEnum;
 }
 
 export class AdmissionReviewDto {
-  @ApiProperty({ example: 'user-uuid-applicant-123' })
+  @ApiProperty({ example: 'app-uuid-123' })
   @IsString()
   @IsNotEmpty()
   applicantId: string;

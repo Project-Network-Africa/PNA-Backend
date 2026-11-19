@@ -1,3 +1,111 @@
+//Application sql
+
+-- 1. Create applications table for multi-stage onboarding workflow
+create table if not exists public.applications (
+  id uuid default uuid_generate_v4() primary key,
+  profile_id uuid references public.profiles(id) on delete cascade unique,
+  first_name text not null,
+  last_name text not null,
+  email text not null unique,
+  phone_number text not null,
+  country text not null,
+  track text check (track in ('Product design', 'Frontend developer', 'backend developer', 'product manager', 'Business analyst', 'project coordinator', 'project manager')),
+  cohort_id uuid references public.cohorts(id) on delete set null,
+  cohort_name text, -- e.g. "Cohort 4 - Match, 2027"
+  experience_level text check (experience_level in ('Beginner', 'Some Experience', 'Experienced')),
+  portfolio_link text,
+  linkedin_link text,
+  resume_url text,
+  why_join text,
+  payment_method text not null default 'Paystack',
+  payment_status text not null default 'Pending' check (payment_status in ('Pending', 'Successful', 'Failed')),
+  reference_code text unique, -- e.g. #PNA-2026-08341
+  application_status text not null default 'Draft' check (application_status in ('Draft', 'Submitted', 'Under Review', 'Accepted', 'Rejected')),
+  current_stage integer not null default 1, -- 1: Personal, 2: Program, 3: Experience, 4: Review & Payment
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable RLS
+alter table public.applications enable row level security;
+
+-- RLS Policies
+create policy "Users can view own application"
+  on public.applications for select
+  to authenticated
+  using (auth.uid() = profile_id or email = auth.jwt() ->> 'email');
+
+create policy "Anyone can create or update draft applications"
+  on public.applications for insert
+  to anon, authenticated
+  with check (true);
+
+create policy "Applicants can update own application draft"
+  on public.applications for update
+  to anon, authenticated
+  using (true);
+
+
+-- 1. Create tracks table for admin-managed tracks
+create table if not exists public.tracks (
+  id uuid default uuid_generate_v4() primary key,
+  code text not null unique,
+  label text not null,
+  is_active boolean default true,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.tracks enable row level security;
+
+create policy "Anyone can view active tracks"
+  on public.tracks for select
+  to anon, authenticated
+  using (is_active = true);
+
+-- Allow unauthenticated applicants to fetch available cohorts on Stage 2
+create policy "Anyone can view cohorts"
+  on public.cohorts for select
+  to anon, authenticated
+  using (true);
+
+-- 2. Populate the 7 required tracks
+insert into public.tracks (code, label) values
+  ('PRODUCT_DESIGNER', 'Product Designer'),
+  ('FRONTEND_DEVELOPER', 'Frontend Developer'),
+  ('BACKEND_DEVELOPER', 'Backend Developer'),
+  ('PRODUCT_MANAGER', 'Product Manager'),
+  ('BUSINESS_ANALYST', 'Business Analyst'),
+  ('PROJECT_COORDINATOR', 'Project Coordinator'),
+  ('PROJECT_MANAGER', 'Project Manager')
+on conflict (code) do nothing;
+
+-- 3. Populate the 2 available cohorts
+insert into public.cohorts (name, start_date, end_date, project_deadline, fee_amount)
+select 'Cohort 3 - September 2026', '2026-09-01', '2026-11-30', '2026-11-25 23:59:59+00', 45000.00
+where not exists (select 1 from public.cohorts where name = 'Cohort 3 - September 2026');
+
+insert into public.cohorts (name, start_date, end_date, project_deadline, fee_amount)
+select 'Cohort 4 - March, 2027', '2027-03-01', '2027-05-31', '2027-05-25 23:59:59+00', 45000.00
+where not exists (select 1 from public.cohorts where name = 'Cohort 4 - March, 2027');
+
+-- 4. Update applications table track & payment_method constraints
+alter table public.applications drop constraint if exists applications_track_check;
+alter table public.applications add constraint applications_track_check 
+  check (track in (
+    'PRODUCT_DESIGNER',
+    'FRONTEND_DEVELOPER',
+    'BACKEND_DEVELOPER',
+    'PRODUCT_MANAGER',
+    'BUSINESS_ANALYST',
+    'PROJECT_COORDINATOR',
+    'PROJECT_MANAGER'
+  ));
+
+alter table public.applications drop constraint if exists applications_payment_method_check;
+alter table public.applications add constraint applications_payment_method_check 
+  check (payment_method in ('Paystack', 'Nestuge'));
+
+
 //auth
 
 -- 1. Enable UUID extension if not already enabled
@@ -631,3 +739,5 @@ create policy "Mentors can view private notes addressed to them"
 
 create policy "Mentees can insert private notes to mentor"
   on public.mentee_private_notes for insert to authenticated with check (auth.uid() = mentee_id);
+
+

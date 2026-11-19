@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Post, Put } from '@nestjs/common';
+import { Body, Controller, Param, Get, Post, Put } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ApplicationService } from './application.service.js';
 import {
@@ -21,6 +21,12 @@ export class ApplicationController {
     @Body('applicationId') applicationId?: string,
   ) {
     return this.applicationService.savePersonalInfo(dto, applicationId);
+  }
+
+  @Get('stage-2-options')
+  @ApiOperation({ summary: 'Get available tracks, cohorts, and payment methods (Paystack & Nestuge) for the application form' })
+  async getStage2Options() {
+    return this.applicationService.getStage2Options();
   }
 
   @Put(':id/stage-2-program')

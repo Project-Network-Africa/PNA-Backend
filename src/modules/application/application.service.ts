@@ -60,14 +60,51 @@ export class ApplicationService {
     }
   }
 
-  // 2. STAGE 2: ROLE & PROGRAM SELECTION
+  // GET STAGE 2 OPTIONS (Tracks & Available Cohorts from DB)
+  async getStage2Options() {
+    const [{ data: tracks, error: tracksError }, { data: cohorts, error: cohortsError }] =
+      await Promise.all([
+        this.supabase
+          .from('tracks')
+          .select('id, code, label')
+          .eq('is_active', true)
+          .order('created_at', { ascending: true }),
+        this.supabase
+          .from('cohorts')
+          .select('id, name, start_date, end_date, fee_amount')
+          .in('name', ['Cohort 3 - September 2026', 'Cohort 4 - March, 2027'])
+          .order('start_date', { ascending: true }),
+      ]);
+
+    if (tracksError) throw new BadRequestException(tracksError.message);
+    if (cohortsError) throw new BadRequestException(cohortsError.message);
+
+    return {
+      tracks: tracks || [],
+      cohorts: cohorts || [],
+      paymentMethods: ['Paystack', 'Nestuge'],
+    };
+  }
+
+  // STAGE 2: ROLE & PROGRAM SELECTION
   async saveProgramSelection(applicationId: string, dto: ProgramSelectionStageDto) {
+    let resolvedCohortId = dto.cohortId || null;
+
+    if (!resolvedCohortId && dto.cohortName) {
+      const { data: cohort } = await this.supabase
+        .from('cohorts')
+        .select('id')
+        .eq('name', dto.cohortName)
+        .single();
+      resolvedCohortId = cohort?.id || null;
+    }
+
     const { data, error } = await this.supabase
       .from('applications')
       .update({
         track: dto.track,
         cohort_name: dto.cohortName,
-        cohort_id: dto.cohortId || null,
+        cohort_id: resolvedCohortId,
         current_stage: 2,
       })
       .eq('id', applicationId)
@@ -77,6 +114,7 @@ export class ApplicationService {
     if (error) throw new BadRequestException(error.message);
     return { message: 'Program selection saved', application: data };
   }
+
 
   // 3. STAGE 3: EXPERIENCE & PORTFOLIO
   async saveExperiencePortfolio(applicationId: string, dto: ExperiencePortfolioStageDto) {
