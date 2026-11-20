@@ -82,22 +82,34 @@ export class ExperiencePortfolioStageDto {
   @IsOptional()
   linkedinLink?: string;
 
-  @ApiProperty({ example: 'https://example.com/resume.pdf', required: false })
-  @IsString()
-  @IsOptional()
-  resumeUrl?: string;
-
   @ApiProperty({ example: 'I want to build scalable backend multi-agent systems.' })
   @IsString()
   @IsNotEmpty()
   whyJoin: string;
 }
 
-export class ReviewAndPaymentStageDto {
+export class InitializePaymentDto {
   @ApiProperty({ enum: PaymentMethodEnum, example: PaymentMethodEnum.PAYSTACK })
   @IsEnum(PaymentMethodEnum)
   @IsNotEmpty()
   paymentMethod: PaymentMethodEnum;
+
+  @ApiProperty({ example: 'https://pnafrica.com/apply/callback', required: false })
+  @IsString()
+  @IsOptional()
+  callbackUrl?: string;
+}
+
+export class VerifyPaymentDto {
+  @ApiProperty({ enum: PaymentMethodEnum, example: PaymentMethodEnum.PAYSTACK })
+  @IsEnum(PaymentMethodEnum)
+  @IsNotEmpty()
+  paymentMethod: PaymentMethodEnum;
+
+  @ApiProperty({ example: 'PSK_ref_123456789' })
+  @IsString()
+  @IsNotEmpty()
+  transactionReference: string;
 }
 
 export class AdmissionReviewDto {

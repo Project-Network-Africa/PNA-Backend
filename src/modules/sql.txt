@@ -106,6 +106,48 @@ alter table public.applications add constraint applications_payment_method_check
   check (payment_method in ('Paystack', 'Nestuge'));
 
 
+-- 1. Create cms_contents table (Replaces Directus collections)
+create table if not exists public.cms_contents (
+  id uuid default uuid_generate_v4() primary key,
+  slug text not null unique, -- e.g. 'hero-section', 'about-pna', 'cohort-banner'
+  section text not null,
+  title text not null,
+  subtitle text,
+  body text,
+  media_url text,
+  metadata jsonb default '{}'::jsonb,
+  is_published boolean default true,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.cms_contents enable row level security;
+
+create policy "Anyone can read published CMS content"
+  on public.cms_contents for select
+  to anon, authenticated
+  using (is_published = true);
+
+-- 2. Create Supabase Storage bucket for Applicant Resumes / CVs
+insert into storage.buckets (id, name, public)
+values ('resumes', 'resumes', true)
+on conflict (id) do nothing;
+
+create policy "Anyone can upload resumes"
+  on storage.objects for insert
+  to anon, authenticated
+  with check (bucket_id = 'resumes');
+
+create policy "Anyone can view resumes"
+  on storage.objects for select
+  to anon, authenticated
+  using (bucket_id = 'resumes');
+
+
+alter table public.applications
+add column if not exists payment_transaction_ref text;
+
+
 //auth
 
 -- 1. Enable UUID extension if not already enabled
