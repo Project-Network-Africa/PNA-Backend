@@ -127,4 +127,10 @@ export class ApplicationController {
   async reviewAdmission(@Body() dto: AdmissionReviewDto) {
     return this.applicationService.reviewAdmission(dto);
   }
+
+  @Get('status')
+  @ApiOperation({ summary: 'Check application open/closed window and current early-bird or normal pricing' })
+  async getStatus() {
+    return this.applicationService.getApplicationConfigStatus();
+  }
 }

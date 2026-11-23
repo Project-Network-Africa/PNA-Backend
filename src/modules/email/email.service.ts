@@ -1,6 +1,26 @@
 import { Injectable } from '@nestjs/common';
 import { Resend } from 'resend';
 
+export interface ApplicationReviewEmailPayload {
+  applicantEmail: string;
+  firstName: string;
+  lastName: string;
+  phoneNumber: string;
+  country: string;
+  track: string;
+  cohortName: string;
+  experienceLevel: string;
+  portfolioLink?: string | null;
+  linkedinLink?: string | null;
+  resumeUrl?: string | null;
+  whyJoin?: string | null;
+  referenceCode: string;
+  paymentMethod: string;
+  amount: number;
+  currency: string;
+  transactionReference: string;
+}
+
 @Injectable()
 export class EmailService {
   private resend: Resend;
@@ -128,44 +148,74 @@ export class EmailService {
     return this.sendEmail(email, 'Data Deletion Request Received - PN Africa', html);
   }
 
-  async sendApplicationSubmissionEmails(
-    applicantEmail: string,
-    applicantName: string,
-    referenceCode: string,
-    cohortName: string,
-    track: string,
-  ) {
-    // 1. Email to Applicant
+  async sendApplicationSubmissionEmails(payload: ApplicationReviewEmailPayload) {
+    const applicantName = `${payload.firstName} ${payload.lastName}`.trim();
+
+    // 1. Confirmation Email to Applicant
     const applicantHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
         <h2 style="color: #2563eb;">Application Submitted Successfully!</h2>
         <p style="color: #4b5563; font-size: 16px;">Hello ${applicantName},</p>
         <p style="color: #4b5563; font-size: 16px;">
-          We have successfully received your application for <strong>${track}</strong> in <strong>${cohortName}</strong>.
+          We have received your application for <strong>${payload.track}</strong> in <strong>${payload.cohortName}</strong>.
         </p>
         <div style="background-color: #f9fafb; padding: 16px; border-radius: 6px; margin: 20px 0; text-align: center;">
           <p style="margin: 0; font-size: 14px; color: #6b7280;">Your Application Reference Code:</p>
-          <p style="margin: 8px 0 0 0; font-size: 24px; font-weight: bold; color: #111827;">${referenceCode}</p>
+          <p style="margin: 8px 0 0 0; font-size: 24px; font-weight: bold; color: #111827;">${payload.referenceCode}</p>
         </div>
-        <p style="color: #6b7280; font-size: 13px;">You can use this reference code to track your application status. Our admissions team is reviewing your profile.</p>
+        <p style="color: #4b5563; font-size: 14px;">
+          <strong>Payment:</strong> ${payload.currency} ${payload.amount.toLocaleString()} via ${payload.paymentMethod} (Ref: ${payload.transactionReference})
+        </p>
+        <p style="color: #6b7280; font-size: 13px;">Keep this reference code to track your application status while our admissions team reviews your submission.</p>
       </div>
     `;
-    await this.sendEmail(applicantEmail, `Application Received - ${referenceCode} - PN Africa`, applicantHtml);
+    await this.sendEmail(
+      payload.applicantEmail,
+      `Application Confirmation (${payload.referenceCode}) - PN Africa`,
+      applicantHtml,
+    );
 
-    // 2. Emails to PN-Africa Review Teams
+    // 2. Full Application + CV Email to PN-Africa Review Emails
     const reviewEmails = ['pna-report@googlegroups.com', 'projectnetworkafrica@gmail.com'];
+    const cvSection = payload.resumeUrl
+      ? `<p><strong>Uploaded CV / Resume:</strong> <a href="${payload.resumeUrl}" target="_blank" rel="noopener noreferrer">${payload.resumeUrl}</a></p>`
+      : `<p><strong>Uploaded CV / Resume:</strong> Not provided</p>`;
+
     const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
-        <h2 style="color: #111827;">New Application Submission</h2>
-        <p><strong>Applicant:</strong> ${applicantName} (${applicantEmail})</p>
-        <p><strong>Track:</strong> ${track}</p>
-        <p><strong>Cohort:</strong> ${cohortName}</p>
-        <p><strong>Reference Code:</strong> ${referenceCode}</p>
-        <p>Please log in to the admin dashboard to review applicant details.</p>
+      <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 8px;">
+        <h2 style="color: #111827;">New Applicant Submission for Review</h2>
+        <p><strong>Reference Code:</strong> ${payload.referenceCode}</p>
+        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 16px 0;" />
+        <h3>Personal Information</h3>
+        <p><strong>Full Name:</strong> ${applicantName}</p>
+        <p><strong>Email:</strong> ${payload.applicantEmail}</p>
+        <p><strong>Phone Number:</strong> ${payload.phoneNumber}</p>
+        <p><strong>Country:</strong> ${payload.country}</p>
+        <h3>Program Selection</h3>
+        <p><strong>Track:</strong> ${payload.track}</p>
+        <p><strong>Cohort:</strong> ${payload.cohortName}</p>
+        <h3>Experience &amp; Portfolio</h3>
+        <p><strong>Experience Level:</strong> ${payload.experienceLevel}</p>
+        <p><strong>Portfolio Link:</strong> ${payload.portfolioLink || 'N/A'}</p>
+        <p><strong>LinkedIn Profile:</strong> ${payload.linkedinLink || 'N/A'}</p>
+        ${cvSection}
+        <p><strong>Why do you want to join this program?</strong></p>
+        <blockquote style="background: #f9fafb; padding: 12px 16px; border-left: 4px solid #2563eb; margin: 8px 0;">
+          ${payload.whyJoin || 'N/A'}
+        </blockquote>
+        <h3>Payment Details</h3>
+        <p><strong>Method:</strong> ${payload.paymentMethod}</p>
+        <p><strong>Amount Paid:</strong> ${payload.currency} ${payload.amount.toLocaleString()}</p>
+        <p><strong>Transaction Reference:</strong> ${payload.transactionReference}</p>
       </div>
     `;
-    for (const email of reviewEmails) {
-      await this.sendEmail(email, `New Application: ${referenceCode} (${track})`, adminHtml);
+
+    for (const reviewerEmail of reviewEmails) {
+      await this.sendEmail(
+        reviewerEmail,
+        `New Application for Review: ${applicantName} (${payload.referenceCode})`,
+        adminHtml,
+      );
     }
   }
 

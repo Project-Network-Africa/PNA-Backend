@@ -7,6 +7,7 @@ import { ApplicantModule } from './modules/applicant/applicant.module.js';
 import { EmailModule } from './modules/email/email.module.js';
 import { MentorModule } from './modules/mentor/mentor.module.js';
 import { ApplicationModule } from './modules/application/application.module.js';
+import { AdminModule } from './modules/admin/admin.module.js';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { ApplicationModule } from './modules/application/application.module.js';
     EmailModule,
     MentorModule,
     ApplicationModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

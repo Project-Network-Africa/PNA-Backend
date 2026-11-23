@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+  ConflictException,
+} from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import axios from 'axios';
 import { EmailService } from '../email/email.service.js';
@@ -32,18 +38,84 @@ export class ApplicationService {
 
 
   // ==========================================
+  // PRICING & APPLICATION WINDOW HELPERS
+  // ==========================================
+  private parsePriceEnv(raw: string | undefined, fallback: number): number {
+    if (!raw) return fallback;
+    const cleaned = Number(String(raw).replace(/,/g, '').trim());
+    return Number.isFinite(cleaned) && cleaned > 0 ? cleaned : fallback;
+  }
+
+  private getApplicationWindowAndPricing(now = new Date()) {
+    const currency = (process.env.PAYMENT_CURRENCY || 'NGN').trim();
+    const earlyBirdPrice = this.parsePriceEnv(process.env.EARLY_BIRD_PRICE, 100000);
+    const normalPrice = this.parsePriceEnv(process.env.NORMAL_PRICE, 150000);
+
+    const startStr = process.env.APPLICATION_START_DATE || '2026-11-19';
+    const endStr = process.env.APPLICATION_END_DATE || '2027-01-03';
+    const earlyBirdDeadlineStr = process.env.EARLY_BIRD_DEADLINE || '2026-12-03';
+
+    const startDate = new Date(`${startStr}T00:00:00.000Z`);
+    // End date covers the entire APPLICATION_END_DATE day through 23:59:59.999Z
+    const endDate = new Date(`${endStr}T23:59:59.999Z`);
+    // Early bird applies through the end of EARLY_BIRD_DEADLINE
+    const earlyBirdDeadline = new Date(`${earlyBirdDeadlineStr}T23:59:59.999Z`);
+
+    const hasStarted = now >= startDate;
+    const hasEnded = now > endDate;
+    const isOpen = hasStarted && !hasEnded;
+    const isEarlyBird = now <= earlyBirdDeadline;
+    const currentPrice = isEarlyBird ? earlyBirdPrice : normalPrice;
+
+    return {
+      isOpen,
+      hasStarted,
+      hasEnded,
+      isEarlyBird,
+      currency,
+      currentPrice,
+      earlyBirdPrice,
+      normalPrice,
+      applicationStartDate: startStr,
+      applicationEndDate: endStr,
+      earlyBirdDeadline: earlyBirdDeadlineStr,
+    };
+  }
+
+  private assertApplicationIsOpen() {
+    const windowInfo = this.getApplicationWindowAndPricing();
+    if (!windowInfo.hasStarted) {
+      throw new ForbiddenException(
+        `Applications open on ${windowInfo.applicationStartDate}. Please check back when the application window opens.`,
+      );
+    }
+    if (windowInfo.hasEnded) {
+      throw new ForbiddenException(
+        `Applications closed on ${windowInfo.applicationEndDate}. Payments and new applications are no longer accepted.`,
+      );
+    }
+    return windowInfo;
+  }
+
+  getApplicationConfigStatus() {
+    return this.getApplicationWindowAndPricing();
+  }
+
+  // ==========================================
   // STAGE 1: PERSONAL INFORMATION
   // ==========================================
   async savePersonalInfo(dto: PersonalInfoStageDto, applicationId?: string) {
+    this.assertApplicationIsOpen();
+
     if (applicationId) {
       const { data, error } = await this.supabase
         .from('applications')
         .update({
-          first_name: dto.firstName,
-          last_name: dto.lastName,
-          email: dto.email,
-          phone_number: dto.phoneNumber,
-          country: dto.country,
+          ...(dto.firstName !== undefined ? { first_name: dto.firstName } : {}),
+          ...(dto.lastName !== undefined ? { last_name: dto.lastName } : {}),
+          ...(dto.email !== undefined ? { email: dto.email } : {}),
+          ...(dto.phoneNumber !== undefined ? { phone_number: dto.phoneNumber } : {}),
+          ...(dto.country !== undefined ? { country: dto.country } : {}),
           current_stage: 1,
           updated_at: new Date().toISOString(),
         })
@@ -61,30 +133,29 @@ export class ApplicationService {
 
     const { data, error } = await this.supabase
       .from('applications')
-      .upsert(
-        {
-          first_name: dto.firstName,
-          last_name: dto.lastName,
-          email: dto.email,
-          phone_number: dto.phoneNumber || '',
-          country: dto.country || '',
-          current_stage: 1,
-          application_status: 'Draft',
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'email' },
-      )
+      .insert({
+        first_name: dto.firstName,
+        last_name: dto.lastName,
+        email: dto.email.trim().toLowerCase(),
+        phone_number: dto.phoneNumber || '',
+        country: dto.country || '',
+        current_stage: 1,
+        application_status: 'Draft',
+        updated_at: new Date().toISOString(),
+      })
       .select()
       .single();
 
     if (error) throw new BadRequestException(error.message);
-    return { message: 'Application draft saved', application: data };
+    return { message: 'Application draft created', application: data };
   }
 
   // ==========================================
-  // STAGE 2: ROLE / TRACK & COHORT SELECTION (No payment here)
+  // STAGE 2: ROLE / TRACK & COHORT SELECTION
   // ==========================================
   async getStage2Options() {
+    const windowInfo = this.getApplicationWindowAndPricing();
+
     const [{ data: tracks, error: tracksError }, { data: cohorts, error: cohortsError }] =
       await Promise.all([
         this.supabase
@@ -94,7 +165,7 @@ export class ApplicationService {
           .order('created_at', { ascending: true }),
         this.supabase
           .from('cohorts')
-          .select('id, name, start_date, end_date, fee_amount')
+          .select('id, name, start_date, end_date')
           .in('name', ['Cohort 3 - September 2026', 'Cohort 4 - March, 2027'])
           .order('start_date', { ascending: true }),
       ]);
@@ -102,15 +173,43 @@ export class ApplicationService {
     if (tracksError) throw new BadRequestException(tracksError.message);
     if (cohortsError) throw new BadRequestException(cohortsError.message);
 
+    const pricedCohorts = (cohorts || []).map((c) => ({
+      ...c,
+      fee_amount: windowInfo.currentPrice,
+      currency: windowInfo.currency,
+      is_early_bird: windowInfo.isEarlyBird,
+      early_bird_deadline: windowInfo.earlyBirdDeadline,
+    }));
+
     return {
+      isOpen: windowInfo.isOpen,
+      pricing: {
+        currency: windowInfo.currency,
+        amount: windowInfo.currentPrice,
+        isEarlyBird: windowInfo.isEarlyBird,
+        earlyBirdPrice: windowInfo.earlyBirdPrice,
+        normalPrice: windowInfo.normalPrice,
+        earlyBirdDeadline: windowInfo.earlyBirdDeadline,
+      },
       tracks: tracks || [],
-      cohorts: cohorts || [],
+      cohorts: pricedCohorts,
     };
   }
 
   async saveProgramSelection(applicationId: string, dto: ProgramSelectionStageDto) {
-    let resolvedCohortId = dto.cohortId || null;
+    this.assertApplicationIsOpen();
 
+    const { data: currentApp, error: appErr } = await this.supabase
+      .from('applications')
+      .select('id, email')
+      .eq('id', applicationId)
+      .single();
+
+    if (appErr || !currentApp) {
+      throw new NotFoundException('Application not found');
+    }
+
+    let resolvedCohortId = dto.cohortId || null;
     if (!resolvedCohortId && dto.cohortName) {
       const { data: cohort } = await this.supabase
         .from('cohorts')
@@ -118,6 +217,23 @@ export class ApplicationService {
         .eq('name', dto.cohortName)
         .single();
       resolvedCohortId = cohort?.id || null;
+    }
+
+    // Early validation: check if this email already applied for this specific cohort
+    if (currentApp.email && resolvedCohortId) {
+      const { data: existingForCohort } = await this.supabase
+        .from('applications')
+        .select('id, application_status, payment_status')
+        .ilike('email', currentApp.email.trim())
+        .eq('cohort_id', resolvedCohortId)
+        .neq('id', applicationId)
+        .maybeSingle();
+
+      if (existingForCohort) {
+        throw new ConflictException(
+          `An application for ${currentApp.email} already exists for ${dto.cohortName || 'this cohort'}. You can apply to a different cohort using this email.`,
+        );
+      }
     }
 
     const { data, error } = await this.supabase
@@ -133,7 +249,15 @@ export class ApplicationService {
       .select()
       .single();
 
-    if (error) throw new BadRequestException(error.message);
+    if (error) {
+      if (error.code === '23505') {
+        throw new ConflictException(
+          'This email has already been used to apply for this cohort.',
+        );
+      }
+      throw new BadRequestException(error.message);
+    }
+
     return { message: 'Program selection saved', application: data };
   }
 
@@ -145,6 +269,8 @@ export class ApplicationService {
     dto: ExperiencePortfolioStageDto,
     resumeFile?: UploadedResumeFile,
   ) {
+    this.assertApplicationIsOpen();
+
     const { data: existingApp, error: fetchError } = await this.supabase
       .from('applications')
       .select('id, resume_url')
@@ -157,7 +283,6 @@ export class ApplicationService {
 
     let resumeUrl = existingApp.resume_url;
 
-    // Upload actual CV file to Supabase Storage if provided
     if (resumeFile) {
       const sanitizedFileName = resumeFile.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
       const filePath = `${applicationId}/${Date.now()}_${sanitizedFileName}`;
@@ -202,12 +327,14 @@ export class ApplicationService {
   }
 
   // ==========================================
-  // STAGE 4: REVIEW SUMMARY & PAYMENT (Paystack & Nestuge)
+  // STAGE 4: REVIEW SUMMARY & PAYMENT
   // ==========================================
   async getStage4ReviewSummary(applicationId: string) {
+    const windowInfo = this.getApplicationWindowAndPricing();
+
     const { data: app, error } = await this.supabase
       .from('applications')
-      .select('*, cohorts(id, name, fee_amount)')
+      .select('*')
       .eq('id', applicationId)
       .single();
 
@@ -215,12 +342,13 @@ export class ApplicationService {
       throw new NotFoundException('Application not found');
     }
 
-    const feeAmount = Number((app.cohorts as any)?.fee_amount || 45000);
-
     return {
+      isOpen: windowInfo.isOpen,
       application: app,
-      feeAmount,
-      currency: 'NGN',
+      feeAmount: windowInfo.currentPrice,
+      currency: windowInfo.currency,
+      isEarlyBird: windowInfo.isEarlyBird,
+      earlyBirdDeadline: windowInfo.earlyBirdDeadline,
       paymentMethods: [
         {
           id: PaymentMethodEnum.PAYSTACK,
@@ -235,11 +363,12 @@ export class ApplicationService {
     };
   }
 
-  // Step 4A: Initialize Checkout Session (Paystack or Nestuge)
   async initializeStage4Payment(applicationId: string, dto: InitializePaymentDto) {
+    const windowInfo = this.assertApplicationIsOpen();
+
     const { data: app, error } = await this.supabase
       .from('applications')
-      .select('*, cohorts(id, name, fee_amount)')
+      .select('*')
       .eq('id', applicationId)
       .single();
 
@@ -251,29 +380,47 @@ export class ApplicationService {
       throw new BadRequestException('Application payment has already been completed');
     }
 
-    const feeAmount = Number((app.cohorts as any)?.fee_amount || 45000);
+    // Re-check per-cohort uniqueness before payment initialization
+    if (app.email && app.cohort_id) {
+      const { data: duplicatePaid } = await this.supabase
+        .from('applications')
+        .select('id')
+        .ilike('email', app.email.trim())
+        .eq('cohort_id', app.cohort_id)
+        .eq('payment_status', 'Successful')
+        .neq('id', applicationId)
+        .maybeSingle();
+
+      if (duplicatePaid) {
+        throw new ConflictException(
+          'This email already has a completed application for this cohort.',
+        );
+      }
+    }
+
+    const feeAmount = windowInfo.currentPrice;
     const frontendUrl = process.env.FRONTEND_URL || 'https://pnafrica.com';
-    const callbackUrl = dto.callbackUrl || `${frontendUrl}/apply/payment-callback?applicationId=${applicationId}`;
+    const callbackUrl =
+      dto.callbackUrl || `${frontendUrl}/apply/payment-callback?applicationId=${applicationId}`;
     const txRef = `PNA_${dto.paymentMethod.toUpperCase()}_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
 
-    // Save selected payment method & reference
     await this.supabase
       .from('applications')
       .update({
         payment_method: dto.paymentMethod,
         payment_transaction_ref: txRef,
         current_stage: 4,
+        updated_at: new Date().toISOString(),
       })
       .eq('id', applicationId);
 
-    // 1. PAYSTACK INITIALIZATION
     if (dto.paymentMethod === PaymentMethodEnum.PAYSTACK) {
       try {
         const paystackRes = await axios.post(
           'https://api.paystack.co/transaction/initialize',
           {
             email: app.email,
-            amount: Math.round(feeAmount * 100), // Paystack expects amount in kobo
+            amount: Math.round(feeAmount * 100),
             reference: txRef,
             callback_url: callbackUrl,
             metadata: {
@@ -298,6 +445,7 @@ export class ApplicationService {
           reference: paystackRes.data.data.reference,
           publicKey: process.env.PAYSTACK_PUBLIC_KEY,
           amount: feeAmount,
+          currency: windowInfo.currency,
         };
       } catch (err: any) {
         throw new BadRequestException(
@@ -306,7 +454,6 @@ export class ApplicationService {
       }
     }
 
-    // 2. NESTUGE INITIALIZATION
     if (dto.paymentMethod === PaymentMethodEnum.NESTUGE) {
       const baseNestugeUrl = process.env.NESTUGE_CHECKOUT_URL || 'https://nestuge.com/pay/pnafrica';
       const separator = baseNestugeUrl.includes('?') ? '&' : '?';
@@ -316,6 +463,7 @@ export class ApplicationService {
         `&email=${encodeURIComponent(app.email)}` +
         `&name=${encodeURIComponent(`${app.first_name} ${app.last_name}`)}` +
         `&amount=${feeAmount}` +
+        `&currency=${encodeURIComponent(windowInfo.currency)}` +
         `&redirect_url=${encodeURIComponent(callbackUrl)}`;
 
       return {
@@ -323,14 +471,16 @@ export class ApplicationService {
         authorizationUrl: checkoutUrl,
         reference: txRef,
         amount: feeAmount,
+        currency: windowInfo.currency,
       };
     }
 
     throw new BadRequestException('Unsupported payment method');
   }
 
-  // Step 4B: Verify Payment & Finalize Application Submission
   async verifyAndSubmitApplication(applicationId: string, dto: VerifyPaymentDto) {
+    const windowInfo = this.assertApplicationIsOpen();
+
     const { data: app, error: fetchError } = await this.supabase
       .from('applications')
       .select('*')
@@ -341,8 +491,9 @@ export class ApplicationService {
       throw new NotFoundException('Application not found');
     }
 
-    // Return existing reference code if already finalized (idempotent)
     if (app.payment_status === 'Successful' && app.reference_code) {
+      const paidAmount = windowInfo.currentPrice;
+      const paidAt = app.paid_at || app.updated_at || new Date().toISOString();
       return {
         message: 'Application Submitted Successfully!',
         popupDetails: {
@@ -351,10 +502,17 @@ export class ApplicationService {
           track: app.track,
           referenceCode: app.reference_code,
         },
+        payment: {
+          amount: paidAmount,
+          currency: windowInfo.currency,
+          paymentMethod: app.payment_method || dto.paymentMethod,
+          status: 'Successful',
+          transactionReference: app.payment_transaction_ref || dto.transactionReference,
+          paidAt,
+        },
       };
     }
 
-    // Verify Paystack payment directly against Paystack API
     if (dto.paymentMethod === PaymentMethodEnum.PAYSTACK) {
       try {
         const verifyRes = await axios.get(
@@ -376,14 +534,14 @@ export class ApplicationService {
       }
     }
 
-    // Verify Nestuge payment reference
     if (dto.paymentMethod === PaymentMethodEnum.NESTUGE) {
       if (!dto.transactionReference) {
         throw new BadRequestException('Nestuge transaction reference is required');
       }
     }
 
-    // Generate unique application reference code e.g. #PNA-2026-08341
+    const amountPaid = windowInfo.currentPrice;
+    const paidAt = new Date().toISOString();
     const randomNum = Math.floor(10000 + Math.random() * 90000);
     const referenceCode = `#PNA-${new Date().getFullYear()}-${randomNum}`;
 
@@ -393,23 +551,35 @@ export class ApplicationService {
         payment_method: dto.paymentMethod,
         payment_status: 'Successful',
         payment_transaction_ref: dto.transactionReference,
+        paid_at: paidAt,
         reference_code: referenceCode,
         application_status: 'Submitted',
         current_stage: 4,
-        updated_at: new Date().toISOString(),
+        updated_at: paidAt,
       })
       .eq('id', applicationId);
 
     if (error) throw new BadRequestException(error.message);
 
-    // Send confirmation email to applicant + full details email to PN-Africa review team
-    await this.emailService.sendApplicationSubmissionEmails(
-      app.email,
-      `${app.first_name} ${app.last_name}`,
+    await this.emailService.sendApplicationSubmissionEmails({
+      applicantEmail: app.email,
+      firstName: app.first_name,
+      lastName: app.last_name,
+      phoneNumber: app.phone_number,
+      country: app.country,
+      track: app.track || 'General Track',
+      cohortName: app.cohort_name || 'Active Cohort',
+      experienceLevel: app.experience_level || 'N/A',
+      portfolioLink: app.portfolio_link,
+      linkedinLink: app.linkedin_link,
+      resumeUrl: app.resume_url,
+      whyJoin: app.why_join,
       referenceCode,
-      app.cohort_name || 'Active Cohort',
-      app.track || 'General Track',
-    );
+      paymentMethod: dto.paymentMethod,
+      amount: amountPaid,
+      currency: windowInfo.currency,
+      transactionReference: dto.transactionReference,
+    });
 
     return {
       message: 'Application Submitted Successfully!',
@@ -418,6 +588,14 @@ export class ApplicationService {
         cohortAppliedFor: app.cohort_name,
         track: app.track,
         referenceCode,
+      },
+      payment: {
+        amount: amountPaid,
+        currency: windowInfo.currency,
+        paymentMethod: dto.paymentMethod,
+        status: 'Successful',
+        transactionReference: dto.transactionReference,
+        paidAt,
       },
     };
   }

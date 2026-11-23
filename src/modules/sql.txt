@@ -147,6 +147,19 @@ create policy "Anyone can view resumes"
 alter table public.applications
 add column if not exists payment_transaction_ref text;
 
+-- 1. Drop global unique constraint on email if it exists
+alter table public.applications
+  drop constraint if exists applications_email_key;
+
+-- 2. Add unique constraint per (email, cohort_id) so an applicant can apply to Cohort A and Cohort B,
+--    but cannot submit duplicate applications for the same cohort
+create unique index if not exists applications_email_cohort_unique_idx
+  on public.applications (lower(email), cohort_id)
+  where cohort_id is not null;
+
+-- 3. Add paid_at timestamp column for payment metadata
+alter table public.applications
+  add column if not exists paid_at timestamp with time zone;
 
 //auth
 
@@ -783,3 +796,81 @@ create policy "Mentees can insert private notes to mentor"
   on public.mentee_private_notes for insert to authenticated with check (auth.uid() = mentee_id);
 
 
+//admin
+
+-- 1. Extend cohorts table for capacity & active status tracking
+alter table public.cohorts
+  add column if not exists max_capacity integer not null default 100,
+  add column if not exists status text not null default 'Active'
+    check (status in ('Active', 'Upcoming', 'Completed'));
+
+-- 2. Extend mentors table for pending mentor applications & active status
+alter table public.mentors
+  add column if not exists verification_status text not null default 'Approved'
+    check (verification_status in ('Pending', 'Approved', 'Rejected')),
+  add column if not exists is_active boolean not null default true;
+
+-- 3. Extend payments table for refund tracking
+alter table public.payments
+  add column if not exists refund_amount numeric(10,2) not null default 0.00;
+
+-- 4. Employers Table (Employer Verification & Activity)
+create table if not exists public.employers (
+  id uuid default uuid_generate_v4() primary key,
+  profile_id uuid references public.profiles(id) on delete cascade unique,
+  company_name text not null,
+  company_email text not null,
+  industry text,
+  website text,
+  verification_status text not null default 'Pending'
+    check (verification_status in ('Pending', 'Verified', 'Rejected')),
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 5. Employer Jobs & Placements Table
+create table if not exists public.employer_jobs (
+  id uuid default uuid_generate_v4() primary key,
+  employer_id uuid references public.employers(id) on delete cascade not null,
+  cohort_id uuid references public.cohorts(id) on delete set null,
+  title text not null,
+  status text not null default 'Active' check (status in ('Active', 'Closed')),
+  candidates_under_review integer not null default 0,
+  successful_placements integer not null default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 6. Admin Audit Logs Table (Recent Activity Stream)
+create table if not exists public.admin_audit_logs (
+  id uuid default uuid_generate_v4() primary key,
+  cohort_id uuid references public.cohorts(id) on delete set null,
+  actor_name text not null,
+  action_type text not null check (
+    action_type in (
+      'APPLICATION_SUBMITTED',
+      'MENTOR_VERIFIED',
+      'ACCOUNT_APPROVED',
+      'PAYMENT_RECEIVED',
+      'TRACK_PUBLISHED',
+      'COHORT_CREATED',
+      'CONTENT_PUBLISHED'
+    )
+  ),
+  description text not null,
+  metadata jsonb default '{}'::jsonb,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable RLS
+alter table public.employers enable row level security;
+alter table public.employer_jobs enable row level security;
+alter table public.admin_audit_logs enable row level security;
+
+create policy "Authenticated users can view verified employers"
+  on public.employers for select to authenticated using (true);
+
+create policy "Authenticated users can view active employer jobs"
+  on public.employer_jobs for select to authenticated using (true);
+
+create policy "Admins can view audit logs"
+  on public.admin_audit_logs for select to authenticated using (true);
