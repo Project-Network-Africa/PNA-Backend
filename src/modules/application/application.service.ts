@@ -56,9 +56,7 @@ export class ApplicationService {
     const earlyBirdDeadlineStr = process.env.EARLY_BIRD_DEADLINE || '2026-12-03';
 
     const startDate = new Date(`${startStr}T00:00:00.000Z`);
-    // End date covers the entire APPLICATION_END_DATE day through 23:59:59.999Z
     const endDate = new Date(`${endStr}T23:59:59.999Z`);
-    // Early bird applies through the end of EARLY_BIRD_DEADLINE
     const earlyBirdDeadline = new Date(`${earlyBirdDeadlineStr}T23:59:59.999Z`);
 
     const hasStarted = now >= startDate;
@@ -166,14 +164,13 @@ export class ApplicationService {
         this.supabase
           .from('cohorts')
           .select('id, name, start_date, end_date')
-          .in('name', ['Cohort 3 - September 2026', 'Cohort 4 - March, 2027'])
           .order('start_date', { ascending: true }),
       ]);
 
     if (tracksError) throw new BadRequestException(tracksError.message);
     if (cohortsError) throw new BadRequestException(cohortsError.message);
 
-    const pricedCohorts = (cohorts || []).map((c) => ({
+    const pricedCohorts = (cohorts || []).map((c: any) => ({
       ...c,
       fee_amount: windowInfo.currentPrice,
       currency: windowInfo.currency,
