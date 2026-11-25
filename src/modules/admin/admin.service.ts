@@ -17,6 +17,28 @@ import {
   ContactMentorDto,
   AdminInviteMentorDto,
 } from './dto/admin-mentors.dto.js';
+import {
+  AdminUsersQueryDto,
+  CreateAdminUserDto,
+  BulkUsersActionDto,
+  ManageAdminUserDto,
+} from './dto/admin-users.dto.js';
+import {
+  AdminProjectsQueryDto,
+  CreateAdminProjectDto,
+  ReviewAdminProjectDto,
+} from './dto/admin-projects.dto.js';
+import {
+  AdminPaymentsQueryDto,
+  ResolvePaymentActionDto,
+  
+} from './dto/admin-payments-page.dto.js';
+import {
+  AdminCohortsQueryDto,
+  CreateAdminCohortPageDto,
+  UpdateAdminCohortPageDto,
+} from './dto/admin-cohorts-page.dto.js';
+
 
 @Injectable()
 export class AdminService {
@@ -1909,6 +1931,1490 @@ export class AdminService {
       String(m.rating),
       String(m.overdue),
       m.lastActive,
+    ]);
+
+    return [header, ...rows]
+      .map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+  }
+
+  // ==========================================
+  // ADMIN USERS PAGE HELPERS
+  // ==========================================
+  private normalizeUserStatus(
+    rawStatus?: string | null,
+    isActive?: boolean | null,
+  ): 'Active' | 'Suspended' | 'Unavailable' {
+    const s = (rawStatus || '').toLowerCase();
+    if (s === 'suspended') return 'Suspended';
+    if (s === 'unavailable') return 'Unavailable';
+    if (isActive === false) return 'Suspended';
+    return 'Active';
+  }
+
+  private computeUserPermission(
+    role: string,
+    status: 'Active' | 'Suspended' | 'Unavailable',
+  ): 'Standard' | 'Mentor' | 'Employer' | 'Full Access' | 'Restricted' {
+    const r = (role || '').toLowerCase();
+    if (r === 'admin') return 'Full Access';
+    if (r === 'applicant' && status === 'Suspended') return 'Restricted';
+    if (r === 'mentor') return 'Mentor';
+    if (r === 'employer') return 'Employer';
+    return 'Standard';
+  }
+
+  private formatJoinedDate(dateInput: string | Date): string {
+    return new Date(dateInput).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+  }
+
+  private getQuarterStartUtc(date: Date, quarterOffset = 0): Date {
+    const currentQuarter = Math.floor(date.getUTCMonth() / 3);
+    const targetMonthIndex = date.getUTCFullYear() * 12 + currentQuarter * 3 + quarterOffset * 3;
+    const year = Math.floor(targetMonthIndex / 12);
+    const month = ((targetMonthIndex % 12) + 12) % 12;
+    return new Date(Date.UTC(year, month, 1));
+  }
+
+  // ==========================================
+  // ADMIN USERS PAGE ENDPOINT DATA
+  // ==========================================
+  async getUsersPageData(query: AdminUsersQueryDto) {
+    const now = new Date();
+    const currentQuarterStart = this.getQuarterStartUtc(now, 0);
+    const prevQuarterStart = this.getQuarterStartUtc(now, -1);
+
+    const [
+      { data: profiles, error: profilesError },
+      { data: mentors, error: mentorsError },
+      { data: employers, error: employersError },
+    ] = await Promise.all([
+      this.supabase
+        .from('profiles')
+        .select('id, first_name, last_name, email, role, is_active, status, last_login_at, created_at, updated_at')
+        .order('created_at', { ascending: false }),
+      this.supabase.from('mentors').select('id, profile_id, is_active, verification_status'),
+      this.supabase.from('employers').select('id, profile_id, company_name, verification_status'),
+    ]);
+
+    if (profilesError) throw new BadRequestException(profilesError.message);
+    if (mentorsError) throw new BadRequestException(mentorsError.message);
+    if (employersError) throw new BadRequestException(employersError.message);
+
+    const mentorByProfileId = new Map<string, any>();
+    for (const m of mentors || []) {
+      mentorByProfileId.set(m.profile_id, m);
+    }
+
+    const employerByProfileId = new Map<string, any>();
+    for (const e of employers || []) {
+      employerByProfileId.set(e.profile_id, e);
+    }
+
+    const allUsers = profiles || [];
+    const totalUsers = allUsers.length;
+
+    const currentQuarterUsers = allUsers.filter(
+      (u) => new Date(u.created_at) >= currentQuarterStart,
+    ).length;
+    const prevQuarterUsers = allUsers.filter((u) => {
+      const dt = new Date(u.created_at);
+      return dt >= prevQuarterStart && dt < currentQuarterStart;
+    }).length;
+    const quarterRisePercent = this.calculatePercentChange(
+      currentQuarterUsers,
+      prevQuarterUsers,
+    );
+
+    const applicantsCount = allUsers.filter(
+      (u) => (u.role || '').toLowerCase() === 'applicant',
+    ).length;
+    const applicantsSharePercent =
+      totalUsers > 0 ? Number(((applicantsCount / totalUsers) * 100).toFixed(1)) : 0;
+
+    const mentorProfiles = allUsers.filter(
+      (u) => (u.role || '').toLowerCase() === 'mentor',
+    );
+    const activeMentorsCount = mentorProfiles.filter((u) => {
+      const status = this.normalizeUserStatus(u.status, u.is_active);
+      const mentorRec = mentorByProfileId.get(u.id);
+      return status === 'Active' && (mentorRec ? mentorRec.is_active !== false : true);
+    }).length;
+
+    const staffAndEmployees = allUsers.filter((u) =>
+      ['employer', 'admin'].includes((u.role || '').toLowerCase()),
+    );
+    const adminsCount = allUsers.filter(
+      (u) => (u.role || '').toLowerCase() === 'admin',
+    ).length;
+
+    const rows = allUsers.map((u: any) => {
+      const status = this.normalizeUserStatus(u.status, u.is_active);
+      const permission = this.computeUserPermission(u.role, status);
+      const lastLoginSource = u.last_login_at || u.updated_at || u.created_at;
+      const lastLoginMs = new Date(lastLoginSource).getTime();
+
+      return {
+        id: u.id,
+        name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || 'Unnamed User',
+        email: u.email,
+        role: u.role,
+        status,
+        joined: this.formatJoinedDate(u.created_at),
+        createdAt: u.created_at,
+        lastLogin: this.formatLastActive(lastLoginSource),
+        lastLoginAt: lastLoginSource,
+        lastLoginMs,
+        permission,
+        employerCompany: employerByProfileId.get(u.id)?.company_name || null,
+        actions: ['View', 'Manage', 'Review'] as Array<'View' | 'Manage' | 'Review'>,
+      };
+    });
+
+    const searchTerm = (query.search || '').trim().toLowerCase();
+    const roleFilter = (query.role || 'all').trim().toLowerCase();
+    const statusFilter = (query.status || 'all').trim().toLowerCase();
+    const activityFilter = (query.lastActivity || 'all').trim().toLowerCase();
+    const nowMs = now.getTime();
+
+    const filteredUsers = rows.filter((row) => {
+      if (searchTerm) {
+        const hay = `${row.name} ${row.email} ${row.role}`.toLowerCase();
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (roleFilter && roleFilter !== 'all') {
+        if ((row.role || '').toLowerCase() !== roleFilter) return false;
+      }
+
+      if (statusFilter && statusFilter !== 'all') {
+        if (row.status.toLowerCase() !== statusFilter) return false;
+      }
+
+      if (activityFilter && activityFilter !== 'all') {
+        const ageMs = nowMs - row.lastLoginMs;
+        if (activityFilter === 'last_24h' && ageMs > 24 * 60 * 60 * 1000) return false;
+        if (activityFilter === 'last_7d' && ageMs > 7 * 24 * 60 * 60 * 1000) return false;
+        if (activityFilter === 'last_30d' && ageMs > 30 * 24 * 60 * 60 * 1000) return false;
+        if (activityFilter === 'inactive_30d' && ageMs <= 30 * 24 * 60 * 60 * 1000) return false;
+      }
+
+      return true;
+    });
+
+    return {
+      metrics: {
+        totalUsers: {
+          count: totalUsers,
+          quarterRisePercent,
+        },
+        applicants: {
+          count: applicantsCount,
+          percentageOfAccounts: applicantsSharePercent,
+        },
+        mentors: {
+          count: mentorProfiles.length,
+          activeCount: activeMentorsCount,
+        },
+        staffAndEmployees: {
+          count: staffAndEmployees.length,
+          adminsCount,
+        },
+      },
+      filters: {
+        search: query.search || '',
+        role: query.role || 'all',
+        status: query.status || 'all',
+        lastActivity: query.lastActivity || 'all',
+        availableRoles: ['Applicant', 'Mentor', 'Employer', 'Admin'],
+        availableStatuses: ['Active', 'Suspended', 'Unavailable'],
+        availableLastActivity: [
+          { key: 'all', label: 'All Activity' },
+          { key: 'last_24h', label: 'Last 24 Hours' },
+          { key: 'last_7d', label: 'Last 7 Days' },
+          { key: 'last_30d', label: 'Last 30 Days' },
+          { key: 'inactive_30d', label: 'Inactive 30+ Days' },
+        ],
+      },
+      actions: {
+        bulkActionsEndpoint: '/admin/users/bulk-action',
+        addUserEndpoint: '/admin/users',
+      },
+      totalFiltered: filteredUsers.length,
+      users: filteredUsers,
+    };
+  }
+
+  async createAdminUser(dto: CreateAdminUserDto, adminName = 'Admin') {
+    const newProfileId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+
+    const { data: profile, error } = await this.supabase
+      .from('profiles')
+      .insert({
+        id: newProfileId,
+        first_name: dto.firstName.trim(),
+        last_name: dto.lastName.trim(),
+        email: dto.email.trim().toLowerCase(),
+        role: dto.role,
+        status: 'Active',
+        is_active: true,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    if (dto.role === 'Mentor') {
+      await this.supabase.from('mentors').insert({
+        profile_id: newProfileId,
+        profession: dto.profession || 'General Mentor',
+        verification_status: 'Approved',
+        is_active: true,
+      });
+    } else if (dto.role === 'Employer') {
+      await this.supabase.from('employers').insert({
+        profile_id: newProfileId,
+        company_name: dto.companyName || `${dto.firstName} ${dto.lastName} Co.`,
+        company_email: dto.email.trim().toLowerCase(),
+        verification_status: 'Verified',
+      });
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'ACCOUNT_APPROVED',
+      description: `Created ${dto.role} user account for ${dto.email}`,
+    });
+
+    return { message: 'User created successfully', user: profile };
+  }
+
+  async bulkUsersAction(dto: BulkUsersActionDto, adminName = 'Admin') {
+    if (!dto.userIds.length) {
+      throw new BadRequestException('At least one userId is required');
+    }
+
+    const nowIso = new Date().toISOString();
+    let patch: Record<string, any> = { updated_at: nowIso };
+
+    if (dto.action === 'ACTIVATE') {
+      patch = { ...patch, status: 'Active', is_active: true };
+    } else if (dto.action === 'SUSPEND') {
+      patch = { ...patch, status: 'Suspended', is_active: false };
+    } else if (dto.action === 'MARK_UNAVAILABLE') {
+      patch = { ...patch, status: 'Unavailable', is_active: false };
+    } else if (dto.action === 'PROMOTE_ADMIN') {
+      patch = { ...patch, role: 'Admin', status: 'Active', is_active: true };
+    }
+
+    const { error } = await this.supabase
+      .from('profiles')
+      .update(patch)
+      .in('id', dto.userIds);
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'ACCOUNT_APPROVED',
+      description: `Executed bulk action "${dto.action}" on ${dto.userIds.length} user(s)`,
+    });
+
+    return {
+      message: `Bulk action "${dto.action}" completed`,
+      affectedCount: dto.userIds.length,
+    };
+  }
+
+  async getUserById(userId: string) {
+    const { data: user, error } = await this.supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error || !user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const status = this.normalizeUserStatus(user.status, user.is_active);
+    return {
+      user,
+      permission: this.computeUserPermission(user.role, status),
+    };
+  }
+
+  async manageUser(userId: string, dto: ManageAdminUserDto, adminName = 'Admin') {
+    const nowIso = new Date().toISOString();
+    const patch: Record<string, any> = { updated_at: nowIso };
+
+    if (dto.role) {
+      patch.role = dto.role;
+    }
+    if (dto.status) {
+      patch.status = dto.status;
+      patch.is_active = dto.status === 'Active';
+    }
+
+    const { data, error } = await this.supabase
+      .from('profiles')
+      .update(patch)
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error || !data) {
+      throw new NotFoundException('User not found');
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'ACCOUNT_APPROVED',
+      description: `Updated user ${data.email} (${JSON.stringify(dto)})`,
+    });
+
+    return { message: 'User updated', user: data };
+  }
+
+  // ==========================================
+  // ADMIN PROJECTS PAGE ENDPOINT DATA
+  // ==========================================
+  async getProjectsPageData(query: AdminProjectsQueryDto) {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const monthEnd = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999),
+    );
+    const yearStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    const overdueCutoffMs = nowMs - 48 * 60 * 60 * 1000;
+
+    const [
+      { data: projects, error: projectsError },
+      { data: cohorts, error: cohortsError },
+      { data: employers, error: employersError },
+      { data: mentors, error: mentorsError },
+      { data: teams, error: teamsError },
+      { data: profiles, error: profilesError },
+      { data: submissions, error: submissionsError },
+    ] = await Promise.all([
+      this.supabase.from('projects').select('*').order('created_at', { ascending: false }),
+      this.supabase.from('cohorts').select('id, name, project_deadline, status'),
+      this.supabase.from('employers').select('id, company_name'),
+      this.supabase.from('mentors').select('id, profile_id, profession'),
+      this.supabase.from('teams').select('id, name, cohort_id'),
+      this.supabase.from('profiles').select('id, first_name, last_name'),
+      this.supabase
+        .from('mentee_submissions')
+        .select('id, project_id, status, submitted_at'),
+    ]);
+
+    if (projectsError) throw new BadRequestException(projectsError.message);
+    if (cohortsError) throw new BadRequestException(cohortsError.message);
+    if (employersError) throw new BadRequestException(employersError.message);
+    if (mentorsError) throw new BadRequestException(mentorsError.message);
+    if (teamsError) throw new BadRequestException(teamsError.message);
+    if (profilesError) throw new BadRequestException(profilesError.message);
+    if (submissionsError) throw new BadRequestException(submissionsError.message);
+
+    const cohortsById = new Map<string, any>();
+    for (const c of cohorts || []) cohortsById.set(c.id, c);
+
+    const employersById = new Map<string, string>();
+    for (const e of employers || []) employersById.set(e.id, e.company_name);
+
+    const profilesById = new Map<string, string>();
+    for (const p of profiles || []) {
+      profilesById.set(p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim());
+    }
+
+    const mentorNameById = new Map<string, string>();
+    for (const m of mentors || []) {
+      mentorNameById.set(m.id, profilesById.get(m.profile_id) || 'Assigned Mentor');
+    }
+
+    const teamNameById = new Map<string, string>();
+    for (const t of teams || []) teamNameById.set(t.id, t.name);
+
+    const overdueSubsByProjectId = new Map<string, number>();
+    let totalOverdueReviews = 0;
+    let oldestOverdueDays = 0;
+
+    for (const s of submissions || []) {
+      if (s.status === 'Pending Review') {
+        const subTime = new Date(s.submitted_at).getTime();
+        if (subTime < overdueCutoffMs) {
+          totalOverdueReviews += 1;
+          if (s.project_id) {
+            overdueSubsByProjectId.set(
+              s.project_id,
+              (overdueSubsByProjectId.get(s.project_id) || 0) + 1,
+            );
+          }
+          const daysOld = Math.max(1, Math.floor((nowMs - subTime) / (24 * 60 * 60 * 1000)));
+          if (daysOld > oldestOverdueDays) oldestOverdueDays = daysOld;
+        }
+      }
+    }
+
+    const allProjects = projects || [];
+    const rows = allProjects.map((proj: any) => {
+      const cohort = cohortsById.get(proj.cohort_id);
+      const deadlineDate = proj.deadline || cohort?.project_deadline || null;
+      const deadlineMs = deadlineDate ? new Date(deadlineDate).getTime() : null;
+      const progress = Number(proj.progress_percentage ?? 0);
+
+      const isCompleted =
+        Boolean(proj.completed_at) ||
+        progress >= 100 ||
+        (proj.review_status || '').toLowerCase() === 'approve';
+
+      const isPastDeadline = typeof deadlineMs === 'number' && deadlineMs < nowMs && !isCompleted;
+
+      const health: 'Healthy' | 'At risk' | 'Critical' =
+        proj.health_status ||
+        (isPastDeadline ? 'Critical' : isPastDeadline === false && progress < 35 ? 'At risk' : 'Healthy');
+
+      const review: 'On track' | 'At risk' | 'Approve' =
+        proj.review_status ||
+        (health === 'Critical' || health === 'At risk' ? 'At risk' : 'On track');
+
+      const completedAt = proj.completed_at ? new Date(proj.completed_at) : null;
+      const completedThisYear =
+        Boolean(completedAt && completedAt >= yearStart) ||
+        (isCompleted && new Date(proj.updated_at || proj.created_at) >= yearStart);
+
+      const completedOnTime =
+        typeof proj.completed_on_time === 'boolean'
+          ? proj.completed_on_time
+          : isCompleted && deadlineMs
+            ? new Date(proj.updated_at || nowMs).getTime() <= deadlineMs
+            : isCompleted;
+
+      return {
+        id: proj.id,
+        projectName: proj.name,
+        description: proj.description,
+        employer:
+          (proj.employer_id && employersById.get(proj.employer_id)) || 'PN Africa Partner',
+        employerId: proj.employer_id || null,
+        cohortId: proj.cohort_id,
+        cohort: cohort?.name || 'Cohort',
+        mentor: (proj.mentor_id && mentorNameById.get(proj.mentor_id)) || 'Unassigned',
+        mentorId: proj.mentor_id || null,
+        team: (proj.team_id && teamNameById.get(proj.team_id)) || 'Unassigned Team',
+        teamId: proj.team_id || null,
+        progress,
+        deadline: deadlineDate ? this.formatJoinedDate(deadlineDate) : 'TBD',
+        deadlineIso: deadlineDate,
+        review,
+        health,
+        isCompleted,
+        completedThisYear,
+        completedOnTime,
+        overdueReviewsCount: overdueSubsByProjectId.get(proj.id) || 0,
+        actions: ['View', 'Review', 'View'] as const,
+      };
+    });
+
+    const activeProjectsRows = rows.filter((r) => !r.isCompleted);
+    const activeDueThisMonthCount = activeProjectsRows.filter((r) => {
+      if (!r.deadlineIso) return false;
+      const d = new Date(r.deadlineIso);
+      return d >= monthStart && d <= monthEnd;
+    }).length;
+
+    const atRiskProjectsCount = rows.filter(
+      (r) => r.health === 'At risk' || r.health === 'Critical' || r.review === 'At risk',
+    ).length;
+
+    const completedThisYearRows = rows.filter((r) => r.completedThisYear);
+    const completedOnTimeCount = completedThisYearRows.filter((r) => r.completedOnTime).length;
+    const completedOnTimePercent =
+      completedThisYearRows.length > 0
+        ? Number(((completedOnTimeCount / completedThisYearRows.length) * 100).toFixed(1))
+        : 0;
+
+    const searchTerm = (query.search || '').trim().toLowerCase();
+    const cohortFilter = (query.cohortId || 'all').trim();
+    const reviewFilter = (query.review || 'all').trim().toLowerCase();
+    const healthFilter = (query.health || 'all').trim().toLowerCase();
+
+    const filteredProjects = rows.filter((row) => {
+      if (searchTerm) {
+        const hay = `${row.projectName} ${row.employer} ${row.cohort} ${row.mentor} ${row.team}`.toLowerCase();
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (cohortFilter && cohortFilter.toLowerCase() !== 'all') {
+        if (row.cohortId !== cohortFilter) return false;
+      }
+
+      if (reviewFilter && reviewFilter !== 'all') {
+        if (row.review.toLowerCase() !== reviewFilter) return false;
+      }
+
+      if (healthFilter && healthFilter !== 'all') {
+        if (row.health.toLowerCase() !== healthFilter) return false;
+      }
+
+      return true;
+    });
+
+    return {
+      metrics: {
+        activeProjects: {
+          count: activeProjectsRows.length,
+          dueThisMonthCount: activeDueThisMonthCount,
+        },
+        atRiskProjects: {
+          count: atRiskProjectsCount,
+        },
+        completedThisYear: {
+          count: completedThisYearRows.length,
+          onTimePercentage: completedOnTimePercent,
+        },
+        overdueReviews: {
+          count: totalOverdueReviews,
+          oldestDays: oldestOverdueDays,
+        },
+      },
+      filters: {
+        search: query.search || '',
+        cohortId: query.cohortId || 'all',
+        review: query.review || 'all',
+        health: query.health || 'all',
+        availableCohorts: (cohorts || []).map((c: any) => ({ id: c.id, name: c.name })),
+        availableReviews: ['On track', 'At risk', 'Approve'],
+        availableHealths: ['Healthy', 'At risk', 'Critical'],
+      },
+      actions: {
+        exportCsvEndpoint: '/admin/projects/export',
+        createProjectEndpoint: '/admin/projects',
+      },
+      totalFiltered: filteredProjects.length,
+      projects: filteredProjects,
+    };
+  }
+
+  async createAdminProject(dto: CreateAdminProjectDto, adminName = 'Admin') {
+    const { data, error } = await this.supabase
+      .from('projects')
+      .insert({
+        name: dto.name.trim(),
+        description: dto.description.trim(),
+        cohort_id: dto.cohortId,
+        employer_id: dto.employerId || null,
+        mentor_id: dto.mentorId || null,
+        team_id: dto.teamId || null,
+        deadline: dto.deadline || null,
+        progress_percentage: dto.progressPercentage ?? 0,
+        review_status: 'On track',
+        health_status: 'Healthy',
+        image_url: dto.imageUrl || null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: dto.cohortId,
+      actor_name: adminName,
+      action_type: 'COHORT_CREATED',
+      description: `Created project "${dto.name}"`,
+    });
+
+    return { message: 'Project created successfully', project: data };
+  }
+
+  async getProjectDetailById(projectId: string) {
+    const { data: project, error } = await this.supabase
+      .from('projects')
+      .select('*')
+      .eq('id', projectId)
+      .maybeSingle();
+
+    if (error || !project) {
+      throw new NotFoundException('Project not found');
+    }
+
+    const [{ data: deliverables }, { data: feedback }] = await Promise.all([
+      this.supabase.from('project_deliverables').select('*').eq('project_id', projectId),
+      this.supabase
+        .from('project_mentor_feedback')
+        .select('*')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false }),
+    ]);
+
+    return {
+      project,
+      deliverables: deliverables || [],
+      feedback: feedback || [],
+    };
+  }
+
+  async reviewAdminProject(
+    projectId: string,
+    dto: ReviewAdminProjectDto,
+    adminName = 'Admin',
+  ) {
+    const nowIso = new Date().toISOString();
+    const patch: Record<string, any> = {
+      review_status: dto.reviewStatus,
+      updated_at: nowIso,
+    };
+
+    if (dto.healthStatus) {
+      patch.health_status = dto.healthStatus;
+    } else if (dto.reviewStatus === 'Approve') {
+      patch.health_status = 'Healthy';
+      patch.progress_percentage = 100;
+      patch.completed_at = nowIso;
+    } else if (dto.reviewStatus === 'At risk') {
+      patch.health_status = 'At risk';
+    }
+
+    const { data, error } = await this.supabase
+      .from('projects')
+      .update(patch)
+      .eq('id', projectId)
+      .select()
+      .single();
+
+    if (error || !data) {
+      throw new NotFoundException('Project not found');
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: data.cohort_id,
+      actor_name: adminName,
+      action_type: 'ACCOUNT_APPROVED',
+      description: `Updated project review for "${data.name}" to "${dto.reviewStatus}"${
+        dto.feedback ? `: ${dto.feedback}` : ''
+      }`,
+    });
+
+    return { message: 'Project review updated', project: data };
+  }
+
+  async exportProjectsCsv(query: AdminProjectsQueryDto): Promise<string> {
+    const data = await this.getProjectsPageData(query);
+    const header = [
+      'Project',
+      'Employer',
+      'Cohort',
+      'Mentor',
+      'Team',
+      'Progress (%)',
+      'Deadline',
+      'Review',
+      'Health',
+    ];
+
+    const rows = data.projects.map((p) => [
+      p.projectName,
+      p.employer,
+      p.cohort,
+      p.mentor,
+      p.team,
+      `${p.progress}%`,
+      p.deadline,
+      p.review,
+      p.health,
+    ]);
+
+    return [header, ...rows]
+      .map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+  }
+
+  // ==========================================
+  // ADMIN COHORTS PAGE HELPERS & ENDPOINT DATA
+  // ==========================================
+  private normalizeCohortStatusDisplay(
+    rawStatus?: string | null,
+    startDate?: string | null,
+    endDate?: string | null,
+  ): 'Active' | 'Complete' | 'Draft' {
+    const s = (rawStatus || '').toLowerCase();
+    if (s === 'draft') return 'Draft';
+    if (s === 'complete' || s === 'completed') return 'Complete';
+    if (s === 'active') return 'Active';
+
+    const now = Date.now();
+    if (endDate && new Date(endDate).getTime() < now) return 'Complete';
+    if (startDate && new Date(startDate).getTime() > now) return 'Draft';
+    return 'Active';
+  }
+
+  private formatShortDate(dateInput?: string | Date | null): string {
+    if (!dateInput) return 'TBD';
+    return new Date(dateInput).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+  }
+
+  async getCohortsPageData(query: AdminCohortsQueryDto) {
+    const [
+      { data: cohorts, error: cohortsError },
+      { data: details, error: detailsError },
+      { data: applications, error: appsError },
+      { data: tracks, error: tracksError },
+    ] = await Promise.all([
+      this.supabase.from('cohorts').select('*').order('start_date', { ascending: false }),
+      this.supabase
+        .from('applicant_details')
+        .select('id, profile_id, cohort_id, profession, completion_percentage, stage'),
+      this.supabase
+        .from('applications')
+        .select('id, cohort_id, track, application_status, payment_status'),
+      this.supabase.from('tracks').select('id, code, label').eq('is_active', true),
+    ]);
+
+    if (cohortsError) throw new BadRequestException(cohortsError.message);
+    if (detailsError) throw new BadRequestException(detailsError.message);
+    if (appsError) throw new BadRequestException(appsError.message);
+    if (tracksError) throw new BadRequestException(tracksError.message);
+
+    const detailsByCohortId = new Map<string, any[]>();
+    for (const d of details || []) {
+      if (!d.cohort_id) continue;
+      const list = detailsByCohortId.get(d.cohort_id) || [];
+      list.push(d);
+      detailsByCohortId.set(d.cohort_id, list);
+    }
+
+    const appsByCohortId = new Map<string, any[]>();
+    for (const a of applications || []) {
+      if (!a.cohort_id) continue;
+      const list = appsByCohortId.get(a.cohort_id) || [];
+      list.push(a);
+      appsByCohortId.set(a.cohort_id, list);
+    }
+
+    const trackLabelByCode = new Map<string, string>();
+    for (const t of tracks || []) {
+      trackLabelByCode.set(t.code.toUpperCase(), t.label);
+    }
+
+    const allCohorts = cohorts || [];
+    const cohortRows = allCohorts.map((c: any) => {
+      const cohortDetails = detailsByCohortId.get(c.id) || [];
+      const cohortApps = appsByCohortId.get(c.id) || [];
+
+      const enrolledCount =
+        cohortDetails.length > 0
+          ? cohortDetails.length
+          : cohortApps.filter((a) => a.application_status === 'Accepted').length;
+
+      const capacity = Number(c.max_capacity || 100);
+      const capacityUtilizationPercent =
+        capacity > 0 ? Number(((enrolledCount / capacity) * 100).toFixed(1)) : 0;
+
+      const avgCompletion =
+        cohortDetails.length > 0
+          ? Number(
+              (
+                cohortDetails.reduce(
+                  (sum, d) => sum + Number(d.completion_percentage || 0),
+                  0,
+                ) / cohortDetails.length
+              ).toFixed(1),
+            )
+          : 0;
+
+      const atRiskLearnersCount = cohortDetails.filter(
+        (d) =>
+          Number(d.completion_percentage || 0) < 30 ||
+          (d.stage || '').toLowerCase() === 'applied',
+      ).length;
+
+      const programmeSet = new Set<string>();
+      if (c.programme) programmeSet.add(c.programme);
+      for (const d of cohortDetails) {
+        if (d.profession) programmeSet.add(d.profession);
+      }
+      for (const a of cohortApps) {
+        if (a.track) {
+          programmeSet.add(trackLabelByCode.get(String(a.track).toUpperCase()) || a.track);
+        }
+      }
+
+      const programmeDisplay =
+        programmeSet.size > 0
+          ? Array.from(programmeSet).join(', ')
+          : (tracks && tracks[0]?.label) || 'Software Engineering';
+
+      const status = this.normalizeCohortStatusDisplay(
+        c.status,
+        c.start_date,
+        c.end_date,
+      );
+
+      return {
+        id: c.id,
+        cohortName: c.name,
+        programme: programmeDisplay,
+        programmesList: Array.from(programmeSet),
+        start: this.formatShortDate(c.start_date),
+        startDateIso: c.start_date,
+        end: this.formatShortDate(c.end_date),
+        endDateIso: c.end_date,
+        deadline: this.formatShortDate(c.project_deadline),
+        deadlineIso: c.project_deadline,
+        capacity,
+        enrolled: enrolledCount,
+        capacityUtilizationPercent,
+        completion: avgCompletion,
+        status,
+        atRiskLearnersCount,
+        actions: ['View', 'Review', 'Edit'] as Array<'View' | 'Review' | 'Edit'>,
+      };
+    });
+
+    // Metrics
+    const activeCohortsRows = cohortRows.filter((r) => r.status === 'Active');
+    const activeProgrammesSet = new Set<string>();
+    for (const ac of activeCohortsRows) {
+      for (const p of ac.programmesList) activeProgrammesSet.add(p);
+    }
+
+    const totalEnrolledLearners = cohortRows.reduce((sum, r) => sum + r.enrolled, 0);
+    const totalCapacity = cohortRows.reduce((sum, r) => sum + Math.max(1, r.capacity), 0);
+    const averageCapacityPercent =
+      totalCapacity > 0
+        ? Number(((totalEnrolledLearners / totalCapacity) * 100).toFixed(1))
+        : 0;
+
+    const cohortsWithCompletion = cohortRows.filter((r) => r.enrolled > 0);
+    const averageCompletionPercent =
+      cohortsWithCompletion.length > 0
+        ? Number(
+            (
+              cohortsWithCompletion.reduce((sum, r) => sum + r.completion, 0) /
+              cohortsWithCompletion.length
+            ).toFixed(1),
+          )
+        : 0;
+
+    // Ordered oldest -> newest to compare latest cohort vs previous cohort
+    const chronological = [...cohortRows].sort(
+      (a, b) => new Date(a.startDateIso).getTime() - new Date(b.startDateIso).getTime(),
+    );
+    const latestCohort = chronological[chronological.length - 1];
+    const previousCohort = chronological[chronological.length - 2];
+    const completionRiseVsLastCohort =
+      latestCohort && previousCohort
+        ? Number((latestCohort.completion - previousCohort.completion).toFixed(1))
+        : 0;
+
+    const totalAtRiskLearners = cohortRows.reduce(
+      (sum, r) => sum + r.atRiskLearnersCount,
+      0,
+    );
+
+    // Search & Filters
+    const searchTerm = (query.search || '').trim().toLowerCase();
+    const programmeFilter = (query.programme || 'all').trim().toLowerCase();
+    const statusFilter = (query.status || 'all').trim().toLowerCase();
+    const dateFilterMs = query.date ? new Date(query.date).getTime() : null;
+
+    const filteredCohorts = cohortRows.filter((row) => {
+      if (searchTerm) {
+        const hay = `${row.cohortName} ${row.programme} ${row.status}`.toLowerCase();
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (programmeFilter && programmeFilter !== 'all') {
+        const matchesProg =
+          row.programme.toLowerCase().includes(programmeFilter) ||
+          row.programmesList.some((p) => p.toLowerCase() === programmeFilter);
+        if (!matchesProg) return false;
+      }
+
+      if (statusFilter && statusFilter !== 'all') {
+        if (row.status.toLowerCase() !== statusFilter) return false;
+      }
+
+      if (dateFilterMs !== null && !Number.isNaN(dateFilterMs)) {
+        const startMs = row.startDateIso ? new Date(row.startDateIso).getTime() : 0;
+        const endMs = row.endDateIso ? new Date(row.endDateIso).getTime() : startMs;
+        if (endMs < dateFilterMs) return false;
+      }
+
+      return true;
+    });
+
+    const availableProgrammes = Array.from(
+      new Set([
+        ...(tracks || []).map((t: any) => t.label),
+        ...cohortRows.flatMap((r) => r.programmesList),
+      ]),
+    );
+
+    return {
+      metrics: {
+        activeCohorts: {
+          count: activeCohortsRows.length,
+          acrossProgrammesCount: activeProgrammesSet.size,
+        },
+        enrolledLearners: {
+          count: totalEnrolledLearners,
+          averageCapacityPercent,
+        },
+        averageCompletion: {
+          percentage: averageCompletionPercent,
+          riseVsLastCohortPercent: completionRiseVsLastCohort,
+        },
+        atRiskLearners: {
+          count: totalAtRiskLearners,
+        },
+      },
+      filters: {
+        search: query.search || '',
+        programme: query.programme || 'all',
+        status: query.status || 'all',
+        date: query.date || '',
+        availableProgrammes,
+        availableStatuses: ['Active', 'Complete', 'Draft'],
+      },
+      actions: {
+        exportEndpoint: '/admin/cohorts/export',
+        createCohortEndpoint: '/admin/cohorts',
+      },
+      totalFiltered: filteredCohorts.length,
+      cohorts: filteredCohorts,
+    };
+  }
+
+  async createAdminCohortPage(dto: CreateAdminCohortPageDto, adminName = 'Admin') {
+    const { data, error } = await this.supabase
+      .from('cohorts')
+      .insert({
+        name: dto.name.trim(),
+        programme: dto.programme.trim(),
+        start_date: dto.startDate,
+        end_date: dto.endDate,
+        project_deadline: dto.deadline,
+        max_capacity: dto.capacity,
+        fee_amount: dto.feeAmount ?? 45000,
+        status: dto.status ?? 'Draft',
+      })
+      .select()
+      .single();
+
+    if (error) throw new BadRequestException(error.message);
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: data.id,
+      actor_name: adminName,
+      action_type: 'COHORT_CREATED',
+      description: `Created cohort "${data.name}" (${dto.programme})`,
+    });
+
+    return { message: 'Cohort created successfully', cohort: data };
+  }
+
+  async getCohortDetailById(cohortId: string) {
+    const { data: cohort, error } = await this.supabase
+      .from('cohorts')
+      .select('*')
+      .eq('id', cohortId)
+      .maybeSingle();
+
+    if (error || !cohort) throw new NotFoundException('Cohort not found');
+
+    const [{ data: learners }, { data: projects }, { data: modules }] = await Promise.all([
+      this.supabase
+        .from('applicant_details')
+        .select('id, profile_id, profession, stage, completion_percentage')
+        .eq('cohort_id', cohortId),
+      this.supabase.from('projects').select('*').eq('cohort_id', cohortId),
+      this.supabase
+        .from('curriculum_modules')
+        .select('*')
+        .eq('cohort_id', cohortId)
+        .order('order_index', { ascending: true }),
+    ]);
+
+    return {
+      cohort,
+      learners: learners || [],
+      projects: projects || [],
+      curriculumModules: modules || [],
+    };
+  }
+
+  async updateAdminCohortPage(
+    cohortId: string,
+    dto: UpdateAdminCohortPageDto,
+    adminName = 'Admin',
+  ) {
+    const patch: Record<string, any> = {};
+    if (dto.name !== undefined) patch.name = dto.name.trim();
+    if (dto.programme !== undefined) patch.programme = dto.programme.trim();
+    if (dto.startDate !== undefined) patch.start_date = dto.startDate;
+    if (dto.endDate !== undefined) patch.end_date = dto.endDate;
+    if (dto.deadline !== undefined) patch.project_deadline = dto.deadline;
+    if (dto.capacity !== undefined) patch.max_capacity = dto.capacity;
+    if (dto.status !== undefined) patch.status = dto.status;
+
+    const { data, error } = await this.supabase
+      .from('cohorts')
+      .update(patch)
+      .eq('id', cohortId)
+      .select()
+      .single();
+
+    if (error || !data) throw new NotFoundException('Cohort not found');
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: data.id,
+      actor_name: adminName,
+      action_type: 'COHORT_CREATED',
+      description: `Updated cohort "${data.name}"`,
+    });
+
+    return { message: 'Cohort updated successfully', cohort: data };
+  }
+
+  async exportCohortsCsv(query: AdminCohortsQueryDto): Promise<string> {
+    const data = await this.getCohortsPageData(query);
+    const header = [
+      'Cohort',
+      'Programme',
+      'Start',
+      'End',
+      'Deadline',
+      'Capacity',
+      'Enrolled',
+      'Completion (%)',
+      'Status',
+    ];
+
+    const rows = data.cohorts.map((c) => [
+      c.cohortName,
+      c.programme,
+      c.start,
+      c.end,
+      c.deadline,
+      String(c.capacity),
+      String(c.enrolled),
+      `${c.completion}%`,
+      c.status,
+    ]);
+
+    return [header, ...rows]
+      .map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+  }
+
+
+  // ==========================================
+  // ADMIN PAYMENTS PAGE HELPERS & ENDPOINT DATA
+  // ==========================================
+  private normalizePaymentRowStatus(
+    rawStatus?: string | null,
+    refundAmount?: number | null,
+    refundStatus?: string | null,
+    outstandingBalance?: number | null,
+  ): 'Paid' | 'Failed' | 'Partial' | 'Refund' {
+    if ((refundStatus || '').toLowerCase() === 'approved' || Number(refundAmount || 0) > 0) {
+      return 'Refund';
+    }
+    const s = (rawStatus || '').toLowerCase();
+    if (s === 'failed' || s === 'unsuccessful') return 'Failed';
+    if (s === 'partial' || Number(outstandingBalance || 0) > 0) return 'Partial';
+    return 'Paid';
+  }
+
+  private normalizeReconciliationStatus(
+    rawRecon?: string | null,
+    status?: 'Paid' | 'Failed' | 'Partial' | 'Refund',
+  ): 'Reconciled' | 'Need Review' | 'Open' | 'Pending' {
+    const r = (rawRecon || '').toLowerCase();
+    if (r === 'reconciled') return 'Reconciled';
+    if (r === 'need review') return 'Need Review';
+    if (r === 'open') return 'Open';
+    if (r === 'pending') return 'Pending';
+
+    if (status === 'Paid') return 'Reconciled';
+    if (status === 'Failed' || status === 'Refund') return 'Need Review';
+    if (status === 'Partial') return 'Open';
+    return 'Pending';
+  }
+
+  async getPaymentsPageData(query: AdminPaymentsQueryDto) {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const yearStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    const prevYearStart = new Date(Date.UTC(now.getUTCFullYear() - 1, 0, 1));
+    const prevYearSameDay = new Date(
+      Date.UTC(now.getUTCFullYear() - 1, now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999),
+    );
+
+    const [
+      { data: payments, error: paymentsError },
+      { data: balances, error: balancesError },
+      { data: profiles, error: profilesError },
+      { data: applicantDetails, error: detailsError },
+      { data: applications, error: appsError },
+      { data: tracks, error: tracksError },
+    ] = await Promise.all([
+      this.supabase.from('payments').select('*').order('created_at', { ascending: false }),
+      this.supabase.from('applicant_balances').select('*'),
+      this.supabase.from('profiles').select('id, first_name, last_name, email'),
+      this.supabase.from('applicant_details').select('profile_id, profession'),
+      this.supabase.from('applications').select('profile_id, email, first_name, last_name, track'),
+      this.supabase.from('tracks').select('id, code, label').eq('is_active', true),
+    ]);
+
+    if (paymentsError) throw new BadRequestException(paymentsError.message);
+    if (balancesError) throw new BadRequestException(balancesError.message);
+    if (profilesError) throw new BadRequestException(profilesError.message);
+    if (detailsError) throw new BadRequestException(detailsError.message);
+    if (appsError) throw new BadRequestException(appsError.message);
+    if (tracksError) throw new BadRequestException(tracksError.message);
+
+    const profilesById = new Map<string, any>();
+    for (const p of profiles || []) profilesById.set(p.id, p);
+
+    const professionByProfileId = new Map<string, string>();
+    for (const d of applicantDetails || []) {
+      if (d.profession) professionByProfileId.set(d.profile_id, d.profession);
+    }
+
+    const trackLabelByCode = new Map<string, string>();
+    for (const t of tracks || []) trackLabelByCode.set(t.code.toUpperCase(), t.label);
+
+    const appByProfileId = new Map<string, any>();
+    for (const a of applications || []) {
+      if (a.profile_id) appByProfileId.set(a.profile_id, a);
+    }
+
+    const balanceByProfileId = new Map<string, any>();
+    for (const b of balances || []) {
+      balanceByProfileId.set(b.profile_id, b);
+    }
+
+    const allPayments = payments || [];
+
+    // Metrics calculations
+    const collectedYtdAmount = allPayments
+      .filter((p: any) => {
+        const dt = new Date(p.created_at);
+        const st = (p.status || '').toLowerCase();
+        return dt >= yearStart && (st === 'successful' || st === 'paid');
+      })
+      .reduce(
+        (sum: number, p: any) =>
+          sum + Math.max(0, Number(p.amount_paid || 0) - Number(p.refund_amount || 0)),
+        0,
+      );
+
+    const collectedPrevPeriodAmount = allPayments
+      .filter((p: any) => {
+        const dt = new Date(p.created_at);
+        const st = (p.status || '').toLowerCase();
+        return (
+          dt >= prevYearStart &&
+          dt <= prevYearSameDay &&
+          (st === 'successful' || st === 'paid')
+        );
+      })
+      .reduce(
+        (sum: number, p: any) =>
+          sum + Math.max(0, Number(p.amount_paid || 0) - Number(p.refund_amount || 0)),
+        0,
+      );
+
+    const collectedYtdRisePercent = this.calculatePercentChange(
+      collectedYtdAmount,
+      collectedPrevPeriodAmount,
+    );
+
+    const openBalances = (balances || []).filter(
+      (b: any) => Number(b.outstanding_balance || 0) > 0,
+    );
+    const outstandingAmount = openBalances.reduce(
+      (sum: number, b: any) => sum + Number(b.outstanding_balance || 0),
+      0,
+    );
+
+    const failedPayments = allPayments.filter((p: any) => {
+      const st = (p.status || '').toLowerCase();
+      return st === 'failed' || st === 'unsuccessful';
+    });
+    const failedTransactionAmount = failedPayments.reduce(
+      (sum: number, p: any) => sum + Number(p.amount_paid || 0),
+      0,
+    );
+    const latestFailedPayment = failedPayments[0];
+    const failedWhen = latestFailedPayment
+      ? this.formatLastActive(latestFailedPayment.created_at)
+      : 'None';
+
+    const pendingRefundPayments = allPayments.filter(
+      (p: any) => (p.refund_status || '').toLowerCase() === 'pending',
+    );
+    const refundPendingAmount = pendingRefundPayments.reduce(
+      (sum: number, p: any) =>
+        sum + Number(p.refund_amount && p.refund_amount > 0 ? p.refund_amount : p.amount_paid || 0),
+      0,
+    );
+
+    // Table Rows
+    const rows = allPayments.map((p: any) => {
+      const profile = profilesById.get(p.profile_id);
+      const app = appByProfileId.get(p.profile_id);
+      const bal = balanceByProfileId.get(p.profile_id);
+
+      const payerName = profile
+        ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim()
+        : app
+          ? `${app.first_name || ''} ${app.last_name || ''}`.trim()
+          : 'Learner';
+
+      const rawTrack =
+        p.programme ||
+        professionByProfileId.get(p.profile_id) ||
+        app?.track ||
+        'Software Engineering';
+      const programme =
+        trackLabelByCode.get(String(rawTrack).toUpperCase()) || rawTrack;
+
+      const status = this.normalizePaymentRowStatus(
+        p.status,
+        p.refund_amount,
+        p.refund_status,
+        bal?.outstanding_balance,
+      );
+      const reconciliation = this.normalizeReconciliationStatus(
+        p.reconciliation_status,
+        status,
+      );
+
+      return {
+        id: p.id,
+        payer: payerName || 'Learner',
+        payerEmail: profile?.email || app?.email || '',
+        transactionId: p.reference || `TXN-${String(p.id).slice(0, 8).toUpperCase()}`,
+        amount: Number(p.amount_paid || 0),
+        refundAmount: Number(p.refund_amount || 0),
+        programme,
+        method: p.payment_method || 'Paystack',
+        date: this.formatShortDate(p.created_at),
+        createdAt: p.created_at,
+        status,
+        reconciliation,
+        refundStatus: p.refund_status || null,
+        actions: ['View', 'Resolve', 'Review'] as Array<'View' | 'Resolve' | 'Review'>,
+      };
+    });
+
+    const searchTerm = (query.search || '').trim().toLowerCase();
+    const programmeFilter = (query.programme || 'all').trim().toLowerCase();
+    const statusFilter = (query.status || 'all').trim().toLowerCase();
+    const methodFilter = (query.method || 'all').trim().toLowerCase();
+
+    const filteredPayments = rows.filter((row) => {
+      if (searchTerm) {
+        const hay = `${row.payer} ${row.payerEmail} ${row.transactionId} ${row.programme} ${row.method}`.toLowerCase();
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (programmeFilter && programmeFilter !== 'all') {
+        if (row.programme.toLowerCase() !== programmeFilter) return false;
+      }
+
+      if (statusFilter && statusFilter !== 'all') {
+        if (row.status.toLowerCase() !== statusFilter) return false;
+      }
+
+      if (methodFilter && methodFilter !== 'all') {
+        if (row.method.toLowerCase() !== methodFilter) return false;
+      }
+
+      return true;
+    });
+
+    const availableProgrammes = Array.from(
+      new Set([
+        ...(tracks || []).map((t: any) => t.label),
+        ...rows.map((r) => r.programme),
+      ]),
+    );
+
+    const availableMethods = Array.from(
+      new Set(['Paystack', 'Stripe', 'Paypal', 'Debit Card', 'Nestuge', ...rows.map((r) => r.method)]),
+    );
+
+    return {
+      metrics: {
+        collectedYtd: {
+          amount: Number(collectedYtdAmount.toFixed(2)),
+          riseVsLastPeriodPercent: collectedYtdRisePercent,
+        },
+        outstanding: {
+          amount: Number(outstandingAmount.toFixed(2)),
+          openInvoicesCount: openBalances.length,
+        },
+        failedTransaction: {
+          amount: Number(failedTransactionAmount.toFixed(2)),
+          failedCount: failedPayments.length,
+          when: failedWhen,
+        },
+        refundPending: {
+          amount: Number(refundPendingAmount.toFixed(2)),
+          requestsCount: pendingRefundPayments.length,
+        },
+      },
+      filters: {
+        search: query.search || '',
+        programme: query.programme || 'all',
+        status: query.status || 'all',
+        method: query.method || 'all',
+        availableProgrammes,
+        availableStatuses: ['Paid', 'Failed', 'Partial', 'Refund'],
+        availableMethods,
+      },
+      actions: {
+        refundQueueEndpoint: '/admin/payments/refund-queue',
+        exportLedgerEndpoint: '/admin/payments/export',
+      },
+      totalFiltered: filteredPayments.length,
+      payments: filteredPayments,
+    };
+  }
+
+  async getRefundQueue() {
+    const data = await this.getPaymentsPageData({});
+    const queue = data.payments.filter(
+      (p) => p.status === 'Refund' || (p.refundStatus || '').toLowerCase() === 'pending',
+    );
+    return {
+      totalRequests: queue.length,
+      totalRefundAmount: queue.reduce(
+        (sum, item) => sum + (item.refundAmount > 0 ? item.refundAmount : item.amount),
+        0,
+      ),
+      queue,
+    };
+  }
+
+  async getPaymentById(paymentId: string) {
+    const { data: payment, error } = await this.supabase
+      .from('payments')
+      .select('*')
+      .eq('id', paymentId)
+      .maybeSingle();
+
+    if (error || !payment) throw new NotFoundException('Payment record not found');
+
+    const { data: profile } = await this.supabase
+      .from('profiles')
+      .select('id, first_name, last_name, email')
+      .eq('id', payment.profile_id)
+      .maybeSingle();
+
+    return { payment, payer: profile || null };
+  }
+
+  async resolvePaymentAction(
+    paymentId: string,
+    dto: ResolvePaymentActionDto,
+    adminName = 'Admin',
+  ) {
+    const { data: payment, error: fetchError } = await this.supabase
+      .from('payments')
+      .select('*')
+      .eq('id', paymentId)
+      .maybeSingle();
+
+    if (fetchError || !payment) {
+      throw new NotFoundException('Payment record not found');
+    }
+
+    const nowIso = new Date().toISOString();
+    const patch: Record<string, any> = { updated_at: nowIso };
+
+    if (dto.actionType === 'MARK_RECONCILED') {
+      patch.reconciliation_status = 'Reconciled';
+    } else if (dto.actionType === 'FLAG_NEED_REVIEW') {
+      patch.reconciliation_status = 'Need Review';
+    } else if (dto.actionType === 'MARK_PAID') {
+      patch.status = 'Successful';
+      patch.reconciliation_status = 'Reconciled';
+    } else if (dto.actionType === 'INITIATE_REFUND') {
+      patch.refund_status = 'Pending';
+      patch.refund_amount = dto.refundAmount ?? Number(payment.amount_paid || 0);
+      patch.reconciliation_status = 'Need Review';
+    } else if (dto.actionType === 'APPROVE_REFUND') {
+      patch.refund_status = 'Approved';
+      patch.refund_amount = dto.refundAmount ?? Number(payment.amount_paid || 0);
+      patch.reconciliation_status = 'Reconciled';
+    }
+
+    const { data: updated, error } = await this.supabase
+      .from('payments')
+      .update(patch)
+      .eq('id', paymentId)
+      .select()
+      .single();
+
+    if (error) throw new BadRequestException(error.message);
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: payment.cohort_id,
+      actor_name: adminName,
+      action_type: 'PAYMENT_RECEIVED',
+      description: `Payment action "${dto.actionType}" on ${payment.reference || payment.id}${
+        dto.notes ? `: ${dto.notes}` : ''
+      }`,
+    });
+
+    return { message: 'Payment action applied', payment: updated };
+  }
+
+  async exportPaymentsLedgerCsv(query: AdminPaymentsQueryDto): Promise<string> {
+    const data = await this.getPaymentsPageData(query);
+    const header = [
+      'Payer',
+      'Transaction ID',
+      'Amount',
+      'Programme',
+      'Method',
+      'Date',
+      'Status',
+      'Reconciliation',
+    ];
+
+    const rows = data.payments.map((p) => [
+      p.payer,
+      p.transactionId,
+      String(p.amount),
+      p.programme,
+      p.method,
+      p.date,
+      p.status,
+      p.reconciliation,
     ]);
 
     return [header, ...rows]

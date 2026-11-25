@@ -26,6 +26,27 @@ import {
   ContactMentorDto,
   AdminInviteMentorDto,
 } from './dto/admin-mentors.dto.js';
+import {
+  AdminUsersQueryDto,
+  CreateAdminUserDto,
+  BulkUsersActionDto,
+  ManageAdminUserDto,
+} from './dto/admin-users.dto.js';
+import {
+  AdminProjectsQueryDto,
+  CreateAdminProjectDto,
+  ReviewAdminProjectDto,
+} from './dto/admin-projects.dto.js';
+import {
+  AdminPaymentsQueryDto,
+  ResolvePaymentActionDto,
+  
+} from './dto/admin-payments-page.dto.js';
+import {
+  AdminCohortsQueryDto,
+  CreateAdminCohortPageDto,
+  UpdateAdminCohortPageDto,
+} from './dto/admin-cohorts-page.dto.js';
 
 @ApiTags('Admin Portal - Dashboard')
 @Controller('admin')
@@ -165,5 +186,117 @@ export class AdminController {
   @ApiOperation({ summary: 'Send an in-app notification and email to a mentor' })
   async contactMentor(@Param('id') id: string, @Body() dto: ContactMentorDto) {
     return this.adminService.contactMentor(id, dto);
+  }
+
+  // ==========================================
+  // ADMIN USERS PAGE ROUTES
+  // ==========================================
+  @Get('users')
+  @ApiOperation({
+    summary: 'Get Admin Users page metrics, filter controls, and tabular user rows',
+  })
+  async getUsers(@Query() query: AdminUsersQueryDto) {
+    return this.adminService.getUsersPageData(query);
+  }
+
+  @Post('users')
+  @ApiOperation({ summary: 'Create a new user account from the Admin Users page' })
+  async createUser(@Body() dto: CreateAdminUserDto) {
+    return this.adminService.createAdminUser(dto);
+  }
+
+  @Post('users/bulk-action')
+  @ApiOperation({ summary: 'Run bulk actions on selected users' })
+  async bulkUsersAction(@Body() dto: BulkUsersActionDto) {
+    return this.adminService.bulkUsersAction(dto);
+  }
+
+  @Get('users/:id')
+  @ApiOperation({ summary: 'View user details and permission level' })
+  async getUserById(@Param('id') id: string) {
+    return this.adminService.getUserById(id);
+  }
+
+  @Patch('users/:id')
+  @ApiOperation({ summary: 'Manage/update user role or status' })
+  async manageUser(@Param('id') id: string, @Body() dto: ManageAdminUserDto) {
+    return this.adminService.manageUser(id, dto);
+  }
+
+  // ==========================================
+  // ADMIN PROJECTS PAGE ROUTES
+  // ==========================================
+  @Get('projects')
+  @ApiOperation({
+    summary: 'Get Admin Projects page metrics, filter controls, and tabular project rows',
+  })
+  async getProjects(@Query() query: AdminProjectsQueryDto) {
+    return this.adminService.getProjectsPageData(query);
+  }
+
+  @Post('projects')
+  @ApiOperation({ summary: 'Create a new cohort project' })
+  async createProject(@Body() dto: CreateAdminProjectDto) {
+    return this.adminService.createAdminProject(dto);
+  }
+
+  @Get('projects/export')
+  @Header('Content-Type', 'text/csv')
+  @Header('Content-Disposition', 'attachment; filename="pna-admin-projects.csv"')
+  @ApiOperation({ summary: 'Export filtered projects list as CSV' })
+  async exportProjects(@Query() query: AdminProjectsQueryDto) {
+    return this.adminService.exportProjectsCsv(query);
+  }
+
+  @Get('projects/:id')
+  @ApiOperation({ summary: 'View project details, deliverables, and feedback' })
+  async getProjectDetail(@Param('id') id: string) {
+    return this.adminService.getProjectDetailById(id);
+  }
+
+  @Patch('projects/:id/review')
+  @ApiOperation({ summary: 'Review or approve a project' })
+  async reviewProject(
+    @Param('id') id: string,
+    @Body() dto: ReviewAdminProjectDto,
+  ) {
+    return this.adminService.reviewAdminProject(id, dto);
+  }
+
+  @Get('cohorts')
+  @ApiOperation({
+    summary: 'Get Admin Cohorts page metrics, search/filter controls, and tabular cohort rows',
+  })
+  async getCohortsPage(@Query() query: AdminCohortsQueryDto) {
+    return this.adminService.getCohortsPageData(query);
+  }
+
+  @Post('cohorts')
+  @ApiOperation({ summary: 'Create a new cohort' })
+  async createCohortPage(@Body() dto: CreateAdminCohortPageDto) {
+    return this.adminService.createAdminCohortPage(dto);
+  }
+
+  @Get('cohorts/export')
+  @Header('Content-Type', 'text/csv')
+  @Header('Content-Disposition', 'attachment; filename="pna-admin-cohorts.csv"')
+  @ApiOperation({ summary: 'Export filtered cohorts as CSV' })
+  async exportCohortsPage(@Query() query: AdminCohortsQueryDto) {
+    return this.adminService.exportCohortsCsv(query);
+  }
+
+  @Get('cohorts/:id')
+  @ApiOperation({ summary: 'View cohort details, learners, projects, and curriculum modules' })
+  async getCohortDetail(@Param('id') id: string) {
+    return this.adminService.getCohortDetailById(id);
+  }
+
+  @Patch('cohorts/:id')
+  @ApiOperation({ summary: 'Edit cohort details, schedule, capacity, or status' })
+  async updateCohortPage(
+    @Param('id') id: string,
+    @Body() dto: UpdateAdminCohortPageDto,
+  ) {
+    return this.adminService.updateAdminCohortPage(id, dto);
   }
 }

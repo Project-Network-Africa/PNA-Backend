@@ -880,3 +880,37 @@ alter table public.mentors
   add column if not exists rating numeric(3,2) not null default 4.80,
   add column if not exists ratings_count integer not null default 0,
   add column if not exists last_active_at timestamp with time zone default timezone('utc'::text, now());
+
+
+alter table public.profiles
+  add column if not exists status text not null default 'Active'
+    check (status in ('Active', 'Suspended', 'Unavailable')),
+  add column if not exists last_login_at timestamp with time zone default timezone('utc'::text, now());
+
+alter table public.projects
+  add column if not exists employer_id uuid references public.employers(id) on delete set null,
+  add column if not exists mentor_id uuid references public.mentors(id) on delete set null,
+  add column if not exists team_id uuid references public.teams(id) on delete set null,
+  add column if not exists progress_percentage numeric(5,2) not null default 0.00,
+  add column if not exists deadline timestamp with time zone,
+  add column if not exists review_status text not null default 'On track'
+    check (review_status in ('On track', 'At risk', 'Approve')),
+  add column if not exists health_status text not null default 'Healthy'
+    check (health_status in ('Healthy', 'At risk', 'Critical')),
+  add column if not exists completed_at timestamp with time zone,
+  add column if not exists completed_on_time boolean;
+
+
+alter table public.cohorts
+  add column if not exists programme text,
+  add column if not exists status text not null default 'Active'
+    check (status in ('Active', 'Complete', 'Draft', 'Upcoming', 'Completed'));
+
+alter table public.payments
+  add column if not exists programme text,
+  add column if not exists reconciliation_status text not null default 'Pending'
+    check (reconciliation_status in ('Reconciled', 'Need Review', 'Open', 'Pending')),
+  add column if not exists refund_status text
+    check (refund_status in ('Pending', 'Approved', 'Rejected')),
+  add column if not exists refund_reason text,
+  add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now());
