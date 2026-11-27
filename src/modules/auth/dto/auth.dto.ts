@@ -1,82 +1,187 @@
-import { IsEmail, IsEnum, IsNotEmpty, IsString, MinLength, IsBoolean, Equals } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
+
 
 export enum UserRole {
   APPLICANT = 'Applicant',
   MENTOR = 'Mentor',
+  EMPLOYER = 'Employer',
+  ADMIN = 'Admin',
 }
 
-export class SignUpDto {
-  @ApiProperty({ example: 'John' })
-  @IsString()
-  @IsNotEmpty({ message: 'First name is required' })
-  firstName: string;
+export class AdminEmailLoginDto {
+  @ApiProperty({
+    description: 'Registered Admin email configured in ADMIN_EMAILS',
+    example: 'ceo@pnafrica.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+}
 
-  @ApiProperty({ example: 'Doe' })
+export class VerifyAdminLoginDto {
+  @ApiProperty({ description: 'Verification token received in the admin email' })
   @IsString()
-  @IsNotEmpty({ message: 'Last name is required' })
-  lastName: string;
+  @IsNotEmpty()
+  token: string;
+}
 
-  @ApiProperty({ example: 'john.doe@example.com' })
-  @IsEmail({}, { message: 'Invalid email address' })
+export class RegisterAcceptedUserDto {
+  @ApiProperty({
+    description: 'Email address used in your accepted Applicant or Mentor application',
+    example: 'jane.doe@example.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
   email: string;
 
-  @ApiProperty({ example: 'SecurePassword123!' })
+  @ApiProperty({
+    description: 'Password to use across the PN Africa platform',
+    minLength: 8,
+    example: 'StrongPass@2026',
+  })
   @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @MinLength(8)
   password: string;
 
-  @ApiProperty({ example: 'SecurePassword123!' })
+  @ApiProperty({
+    description: 'Confirm password (must match password)',
+    minLength: 8,
+    example: 'StrongPass@2026',
+  })
   @IsString()
-  @IsNotEmpty({ message: 'Confirm password is required' })
+  @MinLength(8)
   confirmPassword: string;
-
-  @ApiProperty({ enum: UserRole, example: UserRole.APPLICANT })
-  @IsEnum(UserRole, { message: 'Role must be either Applicant or Mentor' })
-  role: UserRole;
-
-  @ApiProperty({ example: true, description: 'Must agree to Privacy Policy and Terms of Service' })
-  @IsBoolean()
-  @Equals(true, { message: 'You must agree to the Privacy Policy and Terms of Service' })
-  termsAgreement: boolean;
 }
 
 export class LoginDto {
-  @ApiProperty({ example: 'john.doe@example.com' })
+  @ApiProperty({ example: 'jane.doe@example.com' })
   @IsEmail()
+  @IsNotEmpty()
   email: string;
 
-  @ApiProperty({ example: 'SecurePassword123!' })
+  @ApiProperty({ example: 'StrongPass@2026' })
   @IsString()
   @IsNotEmpty()
   password: string;
-
-  @ApiProperty({ example: false, required: false })
-  @IsBoolean()
-  rememberMe?: boolean;
 }
 
-export class ForgotPasswordDto {
-  @ApiProperty({ example: 'john.doe@example.com' })
+export class RequestPasswordResetDto {
+  @ApiProperty({
+    description: 'Registered Applicant or Mentor email address',
+    example: 'jane.doe@example.com',
+  })
   @IsEmail()
+  @IsNotEmpty()
   email: string;
 }
 
-export class ResetPasswordDto {
-  @ApiProperty({ example: 'newSecurePassword123!' })
-  @IsString()
-  @MinLength(8)
-  newPassword: string;
-
-  @ApiProperty({ example: 'newSecurePassword123!' })
+export class ConfirmPasswordResetDto {
+  @ApiProperty({
+    description: 'Verification token from the password reset email link',
+  })
   @IsString()
   @IsNotEmpty()
+  token: string;
+
+  @ApiProperty({
+    description: 'Registered Applicant or Mentor email address',
+    example: 'jane.doe@example.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+
+  @ApiProperty({
+    description: 'New password (minimum 8 characters)',
+    minLength: 8,
+    example: 'NewStrongPass@2026',
+  })
+  @IsString()
+  @MinLength(8)
+  password: string;
+
+  @ApiProperty({
+    description: 'Confirm new password (must match password)',
+    minLength: 8,
+    example: 'NewStrongPass@2026',
+  })
+  @IsString()
+  @MinLength(8)
   confirmPassword: string;
 }
 
-export class ResendVerificationDto {
-  @ApiProperty({ example: 'applicant@example.com' })
+export class SubmitMentorApplicationDto {
+  @ApiProperty({ example: 'Ada' })
+  @IsString()
+  @IsNotEmpty()
+  firstName: string;
+
+  @ApiProperty({ example: 'Okafor' })
+  @IsString()
+  @IsNotEmpty()
+  lastName: string;
+
+  @ApiProperty({ example: 'ada.okafor@example.com' })
   @IsEmail()
   @IsNotEmpty()
   email: string;
+
+  @ApiProperty({ example: '+2348012345678' })
+  @IsString()
+  @IsNotEmpty()
+  phoneNumber: string;
+
+  @ApiProperty({ example: 'Nigeria' })
+  @IsString()
+  @IsNotEmpty()
+  country: string;
+
+  @ApiPropertyOptional({ example: 'Lagos' })
+  @IsOptional()
+  @IsString()
+  state?: string;
+
+  @ApiProperty({ example: 'Product Design' })
+  @IsString()
+  @IsNotEmpty()
+  profession: string;
+
+  @ApiProperty({ example: 6 })
+  @IsInt()
+  @Min(1)
+  yearsOfExperience: number;
+
+  @ApiProperty({ example: 6 })
+  @IsInt()
+  @Min(1)
+  weeklyAvailabilityHours: number;
+
+  @ApiPropertyOptional({ example: 'https://linkedin.com/in/ada-okafor' })
+  @IsOptional()
+  @IsString()
+  linkedinLink?: string;
+
+  @ApiPropertyOptional({ example: 'https://adaokafor.design' })
+  @IsOptional()
+  @IsString()
+  portfolioLink?: string;
+
+  @ApiPropertyOptional({ example: 'https://storage.supabase.co/.../cv.pdf' })
+  @IsOptional()
+  @IsString()
+  resumeUrl?: string;
+
+  @ApiPropertyOptional({ example: 'Passionate about mentoring emerging designers.' })
+  @IsOptional()
+  @IsString()
+  bio?: string;
 }

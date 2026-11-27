@@ -914,3 +914,118 @@ alter table public.payments
     check (refund_status in ('Pending', 'Approved', 'Rejected')),
   add column if not exists refund_reason text,
   add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now());
+
+
+alter table public.cms_contents
+  add column if not exists content_type text not null default 'Blog Post',
+  add column if not exists category text not null default 'General',
+  add column if not exists author_name text not null default 'PN Africa Team',
+  add column if not exists author_id uuid references public.profiles(id) on delete set null,
+  add column if not exists status text not null default 'Draft'
+    check (status in ('Published', 'Draft', 'Scheduled', 'Needs Review')),
+  add column if not exists is_featured boolean not null default false,
+  add column if not exists scheduled_at timestamp with time zone,
+  add column if not exists published_at timestamp with time zone,
+  add column if not exists review_notes text;
+
+
+
+alter table public.applications
+  add column if not exists state text,
+  add column if not exists education text,
+  add column if not exists years_of_experience integer not null default 0,
+  add column if not exists assessment_score numeric(5,2) not null default 0.00,
+  add column if not exists risk_level text not null default 'Low'
+    check (risk_level in ('Low', 'Medium', 'High')),
+  add column if not exists interview_status text not null default 'Pending'
+    check (interview_status in ('Pending', 'Passed', 'Failed')),
+  add column if not exists interview_completed_at timestamp with time zone,
+  add column if not exists admin_note text,
+  add column if not exists id_document_url text,
+  add column if not exists source_channel text not null default 'Web Portal';
+
+alter table public.mentors
+  add column if not exists country text,
+  add column if not exists state text,
+  add column if not exists years_of_experience integer not null default 1,
+  add column if not exists weekly_availability_hours integer not null default 6,
+  add column if not exists linkedin_url text,
+  add column if not exists portfolio_url text,
+  add column if not exists links_verified boolean not null default false,
+  add column if not exists cv_url text,
+  add column if not exists id_doc_url text,
+  add column if not exists reference_doc_url text,
+  add column if not exists documents_checked boolean not null default false,
+  add column if not exists assigned_team_id uuid references public.teams(id) on delete set null,
+  add column if not exists next_capacity_review_at timestamp with time zone,
+  add column if not exists last_office_hours_at timestamp with time zone,
+  add column if not exists last_office_hours_window text,
+  add column if not exists last_accepted_mentee_at timestamp with time zone,
+  add column if not exists previous_rating numeric(3,2),
+  add column if not exists rating_updated_at timestamp with time zone,
+  add column if not exists verified_by text,
+  add column if not exists verified_at timestamp with time zone;
+
+
+
+-- 1. Mentor Applications Table (mirrors applications workflow before mentor account creation)
+create table if not exists public.mentor_applications (
+  id uuid default uuid_generate_v4() primary key,
+  profile_id uuid references public.profiles(id) on delete set null,
+  first_name text not null,
+  last_name text not null,
+  email text not null unique,
+  phone_number text not null,
+  country text not null,
+  state text,
+  profession text not null,
+  years_of_experience integer not null default 1,
+  weekly_availability_hours integer not null default 6,
+  linkedin_link text,
+  portfolio_link text,
+  resume_url text,
+  bio text,
+  reference_code text unique,
+  application_status text not null default 'Under Review'
+    check (application_status in ('Submitted', 'Under Review', 'Accepted', 'Rejected')),
+  reviewed_by text,
+  reviewed_at timestamp with time zone,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.mentor_applications enable row level security;
+
+create policy "Anyone can submit a mentor application"
+  on public.mentor_applications for insert
+  to anon, authenticated
+  with check (true);
+
+create policy "Admins and owners can view mentor applications"
+  on public.mentor_applications for select
+  to authenticated
+  using (true);
+
+-- 2. Admin Magic-Link Login Tokens (single-use, short-lived verification links)
+create table if not exists public.admin_login_tokens (
+  id uuid default uuid_generate_v4() primary key,
+  email text not null,
+  token_hash text not null unique,
+  expires_at timestamp with time zone not null,
+  used_at timestamp with time zone,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.admin_login_tokens enable row level security;
+
+create table if not exists public.password_reset_tokens (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references auth.users(id) on delete cascade not null,
+  email text not null,
+  token_hash text not null unique,
+  expires_at timestamp with time zone not null,
+  used_at timestamp with time zone,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.password_reset_tokens enable row level security;

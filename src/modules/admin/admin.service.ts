@@ -38,6 +38,23 @@ import {
   CreateAdminCohortPageDto,
   UpdateAdminCohortPageDto,
 } from './dto/admin-cohorts-page.dto.js';
+import{
+    MessageMentorDetailDto,
+    EditMentorDetailDto,
+    SuspendMentorDetailDto,
+} from './dto/admin-mentor-detail.dto.js'
+import {
+  ApproveApplicantsDto,
+  AssignApplicantsMentorDto,
+  RejectApplicantsDto,
+} from './dto/admin-applicant-detail.dto.js';
+import {
+  AdminContentQueryDto,
+  BulkContentActionDto,
+  CreateAdminContentDto,
+  UpdateAdminContentDto,
+} from './dto/admin-content.dto.js';
+import { AdminAnalyticsQueryDto } from './dto/admin-analytics.dto.js';
 
 
 @Injectable()
@@ -1291,143 +1308,6 @@ export class AdminService {
       applicants: filteredApplicants,
     };
   }
-
-  async getApplicantDetailById(id: string) {
-    const { data: app } = await this.supabase
-      .from('applications')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-
-    if (app) {
-      const details = app.profile_id
-        ? (
-            await this.supabase
-              .from('applicant_details')
-              .select('*')
-              .eq('profile_id', app.profile_id)
-              .maybeSingle()
-          ).data
-        : null;
-
-      return { application: app, details };
-    }
-
-    const { data: details } = await this.supabase
-      .from('applicant_details')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-
-    if (!details) {
-      throw new NotFoundException(`Applicant with ID "${id}" not found`);
-    }
-
-    const { data: profile } = await this.supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', details.profile_id)
-      .maybeSingle();
-
-    return { profile, details };
-  }
-
-  async assignMentorToApplicant(
-    applicantId: string,
-    dto: AssignApplicantMentorDto,
-    adminName = 'Admin',
-  ) {
-    const { data: mentor, error: mentorError } = await this.supabase
-      .from('mentors')
-      .select('id, profile_id, profession')
-      .eq('id', dto.mentorId)
-      .maybeSingle();
-
-    if (mentorError || !mentor) {
-      throw new NotFoundException('Mentor not found');
-    }
-
-    let profileId: string | null = null;
-    let cohortId: string | null = null;
-    let profession = 'Applicant';
-
-    const { data: app } = await this.supabase
-      .from('applications')
-      .select('*')
-      .eq('id', applicantId)
-      .maybeSingle();
-
-    if (app) {
-      profileId = app.profile_id;
-      cohortId = app.cohort_id;
-      profession = app.track || 'Applicant';
-    } else {
-      const { data: details } = await this.supabase
-        .from('applicant_details')
-        .select('*')
-        .eq('id', applicantId)
-        .maybeSingle();
-      if (!details) {
-        throw new NotFoundException('Applicant not found');
-      }
-      profileId = details.profile_id;
-      cohortId = details.cohort_id;
-      profession = details.profession || 'Applicant';
-    }
-
-    if (!profileId) {
-      throw new BadRequestException(
-        'Applicant does not have a linked user profile yet; complete registration/acceptance first.',
-      );
-    }
-
-    const { data: existingDetails } = await this.supabase
-      .from('applicant_details')
-      .select('id')
-      .eq('profile_id', profileId)
-      .maybeSingle();
-
-    if (existingDetails) {
-      const { error } = await this.supabase
-        .from('applicant_details')
-        .update({ mentor_id: mentor.id })
-        .eq('profile_id', profileId);
-      if (error) throw new BadRequestException(error.message);
-    } else {
-      const { error } = await this.supabase
-        .from('applicant_details')
-        .insert({
-          profile_id: profileId,
-          profession,
-          cohort_id: cohortId,
-          mentor_id: mentor.id,
-          stage: 'Onboarding',
-        });
-      if (error) throw new BadRequestException(error.message);
-    }
-
-    await this.supabase.from('notifications').insert({
-      profile_id: profileId,
-      title: 'Mentor Assigned',
-      message: 'A mentor has been assigned to guide your cohort progress.',
-      type: 'mentor',
-    });
-
-    await this.supabase.from('admin_audit_logs').insert({
-      cohort_id: cohortId,
-      actor_name: adminName,
-      action_type: 'ACCOUNT_APPROVED',
-      description: `Assigned mentor (${mentor.id}) to applicant profile ${profileId}`,
-    });
-
-    return {
-      message: 'Mentor assigned successfully',
-      applicantId,
-      profileId,
-      mentorId: mentor.id,
-    };
-  }
-
   async resolveApplicantRisk(
     applicantId: string,
     dto: ResolveApplicantRiskDto,
@@ -3420,5 +3300,1655 @@ export class AdminService {
     return [header, ...rows]
       .map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
       .join('\n');
+  }
+
+  // ==========================================
+  // ADMIN CONTENT MANAGEMENT PAGE
+  // ==========================================
+  private normalizeContentStatus(
+    rawStatus?: string | null,
+    isPublished?: boolean | null,
+    scheduledAt?: string | null,
+  ): 'Published' | 'Draft' | 'Scheduled' | 'Needs Review' {
+    const s = (rawStatus || '').toLowerCase();
+    if (s === 'published') return 'Published';
+    if (s === 'scheduled') return 'Scheduled';
+    if (s === 'needs review' || s === 'needs_review') return 'Needs Review';
+    if (s === 'draft') return 'Draft';
+
+    if (scheduledAt && new Date(scheduledAt).getTime() > Date.now()) {
+      return 'Scheduled';
+    }
+    if (isPublished === true) return 'Published';
+    return 'Draft';
+  }
+
+  private toSlug(input: string): string {
+    return input
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }
+
+  async getContentManagementPageData(query: AdminContentQueryDto) {
+    const { data: contents, error } = await this.supabase
+      .from('cms_contents')
+      .select('*')
+      .order('updated_at', { ascending: false });
+
+    if (error) throw new BadRequestException(error.message);
+
+    const nowMs = Date.now();
+    const allItems = contents || [];
+
+    const rows = allItems.map((item: any) => {
+      const meta = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+      const scheduledSource = item.scheduled_at || meta.scheduled_at || null;
+      const publishedSource =
+        item.published_at ||
+        meta.published_at ||
+        (item.is_published ? item.created_at : null);
+
+      const status = this.normalizeContentStatus(
+        item.status || meta.status,
+        item.is_published,
+        scheduledSource,
+      );
+
+      const contentType =
+        item.content_type || meta.content_type || item.section || 'Blog Post';
+      const category = item.category || meta.category || 'General';
+      const author = item.author_name || meta.author_name || 'PN Africa Team';
+      const featuredBool =
+        typeof item.is_featured === 'boolean'
+          ? item.is_featured
+          : Boolean(meta.featured);
+
+      const publishDateRaw =
+        status === 'Scheduled' ? scheduledSource : publishedSource || scheduledSource;
+
+      return {
+        id: item.id,
+        contentItem: item.title,
+        slug: item.slug,
+        type: contentType,
+        category,
+        author,
+        status,
+        featured: featuredBool ? 'Yes' : 'No',
+        isFeatured: featuredBool,
+        updated: this.formatShortDate(item.updated_at || item.created_at),
+        updatedAt: item.updated_at || item.created_at,
+        publishDate: publishDateRaw ? this.formatShortDate(publishDateRaw) : 'Not scheduled',
+        publishDateIso: publishDateRaw,
+        actions: ['Edit', 'Review', 'View'] as Array<'Edit' | 'Review' | 'View'>,
+      };
+    });
+
+    // Metrics
+    const publishedCount = rows.filter((r) => r.status === 'Published').length;
+    const draftsCount = rows.filter((r) => r.status === 'Draft').length;
+    const needsReviewCount = rows.filter((r) => r.status === 'Needs Review').length;
+    const scheduledRows = rows.filter((r) => r.status === 'Scheduled');
+
+    const upcomingScheduledDates = scheduledRows
+      .map((r) => r.publishDateIso)
+      .filter((d): d is string => Boolean(d) && new Date(d).getTime() >= nowMs)
+      .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+
+    const fallbackScheduledDate = scheduledRows
+      .map((r) => r.publishDateIso)
+      .filter((d): d is string => Boolean(d))
+      .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
+
+    const nextScheduledRaw = upcomingScheduledDates[0] || fallbackScheduledDate || null;
+
+    // Filters
+    const searchTerm = (query.search || '').trim().toLowerCase();
+    const typeFilter = (query.type || 'all').trim().toLowerCase();
+    const categoryFilter = (query.category || 'all').trim().toLowerCase();
+    const authorFilter = (query.author || 'all').trim().toLowerCase();
+    const statusFilter = (query.status || 'all').trim().toLowerCase();
+    const startMs = query.startDate ? new Date(query.startDate).getTime() : null;
+    const endMs = query.endDate
+      ? new Date(`${query.endDate}T23:59:59.999Z`).getTime()
+      : null;
+
+    let filtered = rows.filter((row) => {
+      if (searchTerm) {
+        const hay = `${row.contentItem} ${row.slug} ${row.type} ${row.category} ${row.author} ${row.status}`.toLowerCase();
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (typeFilter && typeFilter !== 'all') {
+        if (row.type.toLowerCase() !== typeFilter) return false;
+      }
+
+      if (categoryFilter && categoryFilter !== 'all') {
+        if (row.category.toLowerCase() !== categoryFilter) return false;
+      }
+
+      if (authorFilter && authorFilter !== 'all') {
+        if (row.author.toLowerCase() !== authorFilter) return false;
+      }
+
+      if (statusFilter && statusFilter !== 'all') {
+        if (row.status.toLowerCase() !== statusFilter) return false;
+      }
+
+      const rowDateMs = new Date(row.updatedAt).getTime();
+      if (startMs !== null && !Number.isNaN(startMs) && rowDateMs < startMs) {
+        return false;
+      }
+      if (endMs !== null && !Number.isNaN(endMs) && rowDateMs > endMs) {
+        return false;
+      }
+
+      return true;
+    });
+
+    // Sort by Last Updated
+    const sortMode = query.sort || 'last_updated_desc';
+    filtered = [...filtered].sort((a, b) => {
+      const diff = new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+      return sortMode === 'last_updated_asc' ? diff : -diff;
+    });
+
+    return {
+      metrics: {
+        publishedItems: {
+          count: publishedCount,
+        },
+        drafts: {
+          count: draftsCount,
+          waitingReviewsCount: needsReviewCount,
+        },
+        scheduledPosts: {
+          count: scheduledRows.length,
+          nextScheduledDate: nextScheduledRaw ? this.formatShortDate(nextScheduledRaw) : 'None',
+          nextScheduledDateIso: nextScheduledRaw,
+        },
+        needsReview: {
+          count: needsReviewCount,
+        },
+      },
+      filters: {
+        search: query.search || '',
+        type: query.type || 'all',
+        category: query.category || 'all',
+        author: query.author || 'all',
+        status: query.status || 'all',
+        startDate: query.startDate || '',
+        endDate: query.endDate || '',
+        sort: sortMode,
+        availableTypes: Array.from(new Set(rows.map((r) => r.type).filter(Boolean))),
+        availableCategories: Array.from(new Set(rows.map((r) => r.category).filter(Boolean))),
+        availableAuthors: Array.from(new Set(rows.map((r) => r.author).filter(Boolean))),
+        availableStatuses: ['Published', 'Draft', 'Scheduled', 'Needs Review'],
+        availableSorts: [
+          { key: 'last_updated_desc', label: 'Last Updated (Newest First)' },
+          { key: 'last_updated_asc', label: 'Last Updated (Oldest First)' },
+        ],
+      },
+      actions: {
+        bulkActionEndpoint: '/admin/content/bulk-action',
+        createContentEndpoint: '/admin/content',
+      },
+      totalFiltered: filtered.length,
+      contents: filtered,
+    };
+  }
+
+  async createAdminContent(dto: CreateAdminContentDto, adminName = 'Admin') {
+    const nowIso = new Date().toISOString();
+    const status = dto.status || 'Draft';
+    const isPublished = status === 'Published';
+    const slug = (dto.slug ? this.toSlug(dto.slug) : this.toSlug(dto.title)) || `item-${Date.now()}`;
+
+    const { data, error } = await this.supabase
+      .from('cms_contents')
+      .insert({
+        slug,
+        section: (dto.section || this.toSlug(dto.contentType)) || 'general',
+        title: dto.title.trim(),
+        subtitle: null,
+        body: dto.body || '',
+        media_url: dto.mediaUrl || null,
+        content_type: dto.contentType.trim(),
+        category: dto.category.trim(),
+        author_name: (dto.authorName || adminName).trim(),
+        status,
+        is_featured: Boolean(dto.featured),
+        is_published: isPublished,
+        scheduled_at: status === 'Scheduled' ? dto.publishDate || nowIso : null,
+        published_at: isPublished ? dto.publishDate || nowIso : null,
+        metadata: {
+          content_type: dto.contentType.trim(),
+          category: dto.category.trim(),
+          author_name: (dto.authorName || adminName).trim(),
+          status,
+          featured: Boolean(dto.featured),
+          scheduled_at: status === 'Scheduled' ? dto.publishDate || nowIso : null,
+          published_at: isPublished ? dto.publishDate || nowIso : null,
+        },
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .select()
+      .single();
+
+    if (error) throw new BadRequestException(error.message);
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'CONTENT_PUBLISHED',
+      description: `Created content "${data.title}" (${status})`,
+    });
+
+    return { message: 'Content created successfully', content: data };
+  }
+
+  async getContentById(contentId: string) {
+    const { data, error } = await this.supabase
+      .from('cms_contents')
+      .select('*')
+      .eq('id', contentId)
+      .maybeSingle();
+
+    if (error || !data) throw new NotFoundException('Content item not found');
+    return { content: data };
+  }
+
+  async updateAdminContent(
+    contentId: string,
+    dto: UpdateAdminContentDto,
+    adminName = 'Admin',
+  ) {
+    const { data: existing, error: findErr } = await this.supabase
+      .from('cms_contents')
+      .select('*')
+      .eq('id', contentId)
+      .maybeSingle();
+
+    if (findErr || !existing) throw new NotFoundException('Content item not found');
+
+    const nowIso = new Date().toISOString();
+    const nextStatus =
+      dto.status ||
+      this.normalizeContentStatus(existing.status, existing.is_published, existing.scheduled_at);
+    const nextIsPublished = nextStatus === 'Published';
+
+    const patch: Record<string, any> = {
+      updated_at: nowIso,
+      status: nextStatus,
+      is_published: nextIsPublished,
+    };
+
+    if (dto.title !== undefined) patch.title = dto.title.trim();
+    if (dto.contentType !== undefined) patch.content_type = dto.contentType.trim();
+    if (dto.category !== undefined) patch.category = dto.category.trim();
+    if (dto.authorName !== undefined) patch.author_name = dto.authorName.trim();
+    if (dto.featured !== undefined) patch.is_featured = dto.featured;
+    if (dto.body !== undefined) patch.body = dto.body;
+    if (dto.reviewNotes !== undefined) patch.review_notes = dto.reviewNotes;
+    if (dto.publishDate !== undefined) {
+      if (nextStatus === 'Scheduled') patch.scheduled_at = dto.publishDate;
+      if (nextIsPublished) patch.published_at = dto.publishDate;
+    } else if (nextIsPublished && !existing.published_at) {
+      patch.published_at = nowIso;
+    }
+
+    const { data, error } = await this.supabase
+      .from('cms_contents')
+      .update(patch)
+      .eq('id', contentId)
+      .select()
+      .single();
+
+    if (error) throw new BadRequestException(error.message);
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'CONTENT_PUBLISHED',
+      description: `Updated content "${data.title}" (${nextStatus})`,
+    });
+
+    return { message: 'Content updated successfully', content: data };
+  }
+
+  async bulkContentAction(dto: BulkContentActionDto, adminName = 'Admin') {
+    if (!dto.contentIds.length) {
+      throw new BadRequestException('At least one contentId is required');
+    }
+
+    const nowIso = new Date().toISOString();
+
+    if (dto.action === 'DELETE') {
+      const { error } = await this.supabase
+        .from('cms_contents')
+        .delete()
+        .in('id', dto.contentIds);
+      if (error) throw new BadRequestException(error.message);
+    } else {
+      let patch: Record<string, any> = { updated_at: nowIso };
+      if (dto.action === 'PUBLISH') {
+        patch = { ...patch, status: 'Published', is_published: true, published_at: nowIso };
+      } else if (dto.action === 'MOVE_TO_DRAFT') {
+        patch = { ...patch, status: 'Draft', is_published: false };
+      } else if (dto.action === 'SUBMIT_FOR_REVIEW') {
+        patch = { ...patch, status: 'Needs Review', is_published: false };
+      } else if (dto.action === 'FEATURE') {
+        patch = { ...patch, is_featured: true };
+      } else if (dto.action === 'UNFEATURE') {
+        patch = { ...patch, is_featured: false };
+      }
+
+      const { error } = await this.supabase
+        .from('cms_contents')
+        .update(patch)
+        .in('id', dto.contentIds);
+      if (error) throw new BadRequestException(error.message);
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'CONTENT_PUBLISHED',
+      description: `Executed bulk content action "${dto.action}" on ${dto.contentIds.length} item(s)`,
+    });
+
+    return {
+      message: `Bulk content action "${dto.action}" completed`,
+      affectedCount: dto.contentIds.length,
+    };
+  }
+
+  // ==========================================
+  // ADMIN ANALYTICS PAGE
+  // ==========================================
+  async getAnalyticsPageData(query: AdminAnalyticsQueryDto) {
+    const period = query.period || '90d';
+    const now = new Date();
+    const nowMs = now.getTime();
+    const yearStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    const prevYearStart = new Date(Date.UTC(now.getUTCFullYear() - 1, 0, 1));
+    const prevYearSameDay = new Date(
+      Date.UTC(now.getUTCFullYear() - 1, now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999),
+    );
+
+    const periodDays = period === '30d' ? 30 : 90;
+    const currentPeriodStartMs =
+      period === 'ytd'
+        ? yearStart.getTime()
+        : nowMs - periodDays * 24 * 60 * 60 * 1000;
+    const previousPeriodStartMs =
+      period === 'ytd'
+        ? prevYearStart.getTime()
+        : currentPeriodStartMs - periodDays * 24 * 60 * 60 * 1000;
+    const previousPeriodEndMs =
+      period === 'ytd' ? prevYearSameDay.getTime() : currentPeriodStartMs;
+
+    const currentQuarterIndex = Math.floor(now.getUTCMonth() / 3);
+    const currentQuarterStart = new Date(
+      Date.UTC(now.getUTCFullYear(), currentQuarterIndex * 3, 1),
+    );
+    const prevQuarterStart = new Date(
+      Date.UTC(now.getUTCFullYear(), (currentQuarterIndex - 1) * 3, 1),
+    );
+
+    const overdueCutoffMs = nowMs - 48 * 60 * 60 * 1000;
+
+    const [
+      { data: applications, error: appsErr },
+      { data: applicantDetails, error: detailsErr },
+      { data: cohorts, error: cohortsErr },
+      { data: payments, error: paymentsErr },
+      { data: mentors, error: mentorsErr },
+      { data: profiles, error: profilesErr },
+      { data: mentorSessions, error: sessionsErr },
+      { data: submissions, error: subsErr },
+      { data: employers, error: empErr },
+      { data: employerJobs, error: jobsErr },
+    ] = await Promise.all([
+      this.supabase
+        .from('applications')
+        .select('id, application_status, created_at'),
+      this.supabase
+        .from('applicant_details')
+        .select('id, profile_id, cohort_id, stage, completion_percentage, created_at'),
+      this.supabase
+        .from('cohorts')
+        .select('id, name, start_date, end_date, max_capacity, status'),
+      this.supabase
+        .from('payments')
+        .select('id, amount_paid, refund_amount, status, created_at'),
+      this.supabase
+        .from('mentors')
+        .select('id, profile_id, profession, rating, verification_status, is_active'),
+      this.supabase.from('profiles').select('id, first_name, last_name'),
+      this.supabase.from('mentor_sessions').select('id, mentor_id, status, session_date'),
+      this.supabase.from('mentee_submissions').select('id, mentor_id, status, submitted_at'),
+      this.supabase.from('employers').select('id, company_name, verification_status'),
+      this.supabase
+        .from('employer_jobs')
+        .select('id, employer_id, status, candidates_under_review, successful_placements'),
+    ]);
+
+    if (appsErr) throw new BadRequestException(appsErr.message);
+    if (detailsErr) throw new BadRequestException(detailsErr.message);
+    if (cohortsErr) throw new BadRequestException(cohortsErr.message);
+    if (paymentsErr) throw new BadRequestException(paymentsErr.message);
+    if (mentorsErr) throw new BadRequestException(mentorsErr.message);
+    if (profilesErr) throw new BadRequestException(profilesErr.message);
+    if (sessionsErr) throw new BadRequestException(sessionsErr.message);
+    if (subsErr) throw new BadRequestException(subsErr.message);
+    if (empErr) throw new BadRequestException(empErr.message);
+    if (jobsErr) throw new BadRequestException(jobsErr.message);
+
+    const allApps = applications || [];
+    const allDetails = applicantDetails || [];
+    const allPayments = payments || [];
+    const allJobs = employerJobs || [];
+
+    // 1. Top Metrics
+    const currentAppsCount = allApps.filter((a: any) => {
+      const t = new Date(a.created_at).getTime();
+      return t >= currentPeriodStartMs && t <= nowMs;
+    }).length;
+    const prevAppsCount = allApps.filter((a: any) => {
+      const t = new Date(a.created_at).getTime();
+      return t >= previousPeriodStartMs && t < previousPeriodEndMs;
+    }).length;
+    const applicationsChangePercent = this.calculatePercentChange(
+      currentAppsCount,
+      prevAppsCount,
+    );
+
+    const retainedCount = allDetails.filter(
+      (d: any) =>
+        ['Cohort Match', 'Onboarding', 'Active'].includes(d.stage) ||
+        Number(d.completion_percentage || 0) >= 20,
+    ).length;
+    const cohortRetentionRate =
+      allDetails.length > 0
+        ? Number(((retainedCount / allDetails.length) * 100).toFixed(1))
+        : 0;
+    const retentionChangePercent = Number((cohortRetentionRate - 75).toFixed(1));
+
+    const totalPlacements = allJobs.reduce(
+      (sum: number, j: any) => sum + Number(j.successful_placements || 0),
+      0,
+    );
+    const totalCandidates = allJobs.reduce(
+      (sum: number, j: any) =>
+        sum +
+        Number(j.candidates_under_review || 0) +
+        Number(j.successful_placements || 0),
+      0,
+    );
+    const placementRatePercent =
+      totalCandidates > 0
+        ? Number(((totalPlacements / totalCandidates) * 100).toFixed(1))
+        : 0;
+    const placementChangePercent = Number((placementRatePercent - 40).toFixed(1));
+
+    const paidPayments = allPayments.filter((p: any) => {
+      const st = (p.status || '').toLowerCase();
+      return st === 'successful' || st === 'paid';
+    });
+
+    const revenueYtd = paidPayments
+      .filter((p: any) => new Date(p.created_at) >= yearStart)
+      .reduce(
+        (sum: number, p: any) =>
+          sum + Math.max(0, Number(p.amount_paid || 0) - Number(p.refund_amount || 0)),
+        0,
+      );
+    const revenuePrevYtd = paidPayments
+      .filter((p: any) => {
+        const dt = new Date(p.created_at);
+        return dt >= prevYearStart && dt <= prevYearSameDay;
+      })
+      .reduce(
+        (sum: number, p: any) =>
+          sum + Math.max(0, Number(p.amount_paid || 0) - Number(p.refund_amount || 0)),
+        0,
+      );
+    const revenueYtdChangePercent = this.calculatePercentChange(
+      revenueYtd,
+      revenuePrevYtd,
+    );
+
+    // 2. Application Funnel (Applied, Interviewed, Matched, Onboarded)
+    const countStageInRange = (
+      stages: string[],
+      startBoundaryMs: number,
+      endBoundaryMs: number,
+    ) =>
+      allDetails.filter((d: any) => {
+        const t = new Date(d.created_at).getTime();
+        return (
+          t >= startBoundaryMs &&
+          t <= endBoundaryMs &&
+          stages.includes(d.stage)
+        );
+      }).length;
+
+    const appliedCurr = allApps.filter((a: any) => {
+      const t = new Date(a.created_at).getTime();
+      return t >= currentPeriodStartMs && t <= nowMs;
+    }).length;
+    const appliedPrev = allApps.filter((a: any) => {
+      const t = new Date(a.created_at).getTime();
+      return t >= previousPeriodStartMs && t < previousPeriodEndMs;
+    }).length;
+
+    const interviewedCurr = countStageInRange(
+      ['Interview', 'Cohort Match', 'Onboarding', 'Active'],
+      currentPeriodStartMs,
+      nowMs,
+    );
+    const interviewedPrev = countStageInRange(
+      ['Interview', 'Cohort Match', 'Onboarding', 'Active'],
+      previousPeriodStartMs,
+      previousPeriodEndMs,
+    );
+
+    const matchedCurr = countStageInRange(
+      ['Cohort Match', 'Onboarding', 'Active'],
+      currentPeriodStartMs,
+      nowMs,
+    );
+    const matchedPrev = countStageInRange(
+      ['Cohort Match', 'Onboarding', 'Active'],
+      previousPeriodStartMs,
+      previousPeriodEndMs,
+    );
+
+    const onboardedCurr = countStageInRange(
+      ['Onboarding', 'Active'],
+      currentPeriodStartMs,
+      nowMs,
+    );
+    const onboardedPrev = countStageInRange(
+      ['Onboarding', 'Active'],
+      previousPeriodStartMs,
+      previousPeriodEndMs,
+    );
+
+    const funnel = [
+      {
+        stage: 'Applied',
+        count: appliedCurr || allApps.length,
+        changePercent: this.calculatePercentChange(
+          appliedCurr || allApps.length,
+          appliedPrev,
+        ),
+      },
+      {
+        stage: 'Interviewed',
+        count:
+          interviewedCurr ||
+          allDetails.filter((d: any) =>
+            ['Interview', 'Cohort Match', 'Onboarding', 'Active'].includes(d.stage),
+          ).length,
+        changePercent: this.calculatePercentChange(interviewedCurr, interviewedPrev),
+      },
+      {
+        stage: 'Matched',
+        count:
+          matchedCurr ||
+          allDetails.filter((d: any) =>
+            ['Cohort Match', 'Onboarding', 'Active'].includes(d.stage),
+          ).length,
+        changePercent: this.calculatePercentChange(matchedCurr, matchedPrev),
+      },
+      {
+        stage: 'Onboarded',
+        count:
+          onboardedCurr ||
+          allDetails.filter((d: any) =>
+            ['Onboarding', 'Active'].includes(d.stage),
+          ).length,
+        changePercent: this.calculatePercentChange(onboardedCurr, onboardedPrev),
+      },
+    ];
+
+    // 3. Revenue Trend (Current Quarter Total + % Change + Monthly Breakdown)
+    const currentQuarterRevenue = paidPayments
+      .filter((p: any) => new Date(p.created_at) >= currentQuarterStart)
+      .reduce(
+        (sum: number, p: any) =>
+          sum + Math.max(0, Number(p.amount_paid || 0) - Number(p.refund_amount || 0)),
+        0,
+      );
+    const prevQuarterRevenue = paidPayments
+      .filter((p: any) => {
+        const dt = new Date(p.created_at);
+        return dt >= prevQuarterStart && dt < currentQuarterStart;
+      })
+      .reduce(
+        (sum: number, p: any) =>
+          sum + Math.max(0, Number(p.amount_paid || 0) - Number(p.refund_amount || 0)),
+        0,
+      );
+    const quarterRevenueChangePercent = this.calculatePercentChange(
+      currentQuarterRevenue,
+      prevQuarterRevenue,
+    );
+
+    const monthNames = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    const monthlyRevenueMap = new Map<number, number>();
+    for (let m = 0; m < 12; m++) monthlyRevenueMap.set(m, 0);
+
+    for (const p of paidPayments) {
+      const dt = new Date(p.created_at);
+      if (dt.getUTCFullYear() === now.getUTCFullYear()) {
+        const mIdx = dt.getUTCMonth();
+        const net = Math.max(
+          0,
+          Number(p.amount_paid || 0) - Number(p.refund_amount || 0),
+        );
+        monthlyRevenueMap.set(mIdx, (monthlyRevenueMap.get(mIdx) || 0) + net);
+      }
+    }
+
+    const monthlyRevenue = Array.from({ length: now.getUTCMonth() + 1 }, (_, idx) => ({
+      month: monthNames[idx],
+      monthIndex: idx + 1,
+      revenue: Number((monthlyRevenueMap.get(idx) || 0).toFixed(2)),
+    }));
+
+    // 4. Cohort Performance (Completion % + At-Risk Count per Cohort)
+    const detailsByCohortId = new Map<string, any[]>();
+    for (const d of allDetails) {
+      if (!d.cohort_id) continue;
+      const list = detailsByCohortId.get(d.cohort_id) || [];
+      list.push(d);
+      detailsByCohortId.set(d.cohort_id, list);
+    }
+
+    const cohortPerformance = (cohorts || []).map((c: any) => {
+      const learners = detailsByCohortId.get(c.id) || [];
+      const completionPercent =
+        learners.length > 0
+          ? Number(
+              (
+                learners.reduce(
+                  (sum, l) => sum + Number(l.completion_percentage || 0),
+                  0,
+                ) / learners.length
+              ).toFixed(1),
+            )
+          : 0;
+
+      const atRiskCount = learners.filter(
+        (l) =>
+          Number(l.completion_percentage || 0) < 30 ||
+          (l.stage || '').toLowerCase() === 'applied',
+      ).length;
+
+      return {
+        cohortId: c.id,
+        cohortName: c.name,
+        enrolledCount: learners.length,
+        completionPercentage: completionPercent,
+        atRiskLearnersCount: atRiskCount,
+      };
+    });
+
+    // 5. Mentor Performance
+    const ratedMentors = (mentors || []).filter((m: any) => Number(m.rating || 0) > 0);
+    const averageMentorRating =
+      ratedMentors.length > 0
+        ? Number(
+            (
+              ratedMentors.reduce((sum: number, m: any) => sum + Number(m.rating), 0) /
+              ratedMentors.length
+            ).toFixed(1),
+          )
+        : 0;
+
+    const completedSessionsCount = (mentorSessions || []).filter(
+      (s: any) => (s.status || '').toLowerCase() === 'completed',
+    ).length;
+
+    const overdueFeedbackReviewsCount = (submissions || []).filter((s: any) => {
+      return (
+        s.status === 'Pending Review' &&
+        new Date(s.submitted_at).getTime() < overdueCutoffMs
+      );
+    }).length;
+
+    // 6. Employer Activity
+    const verifiedEmployersCount = (employers || []).filter(
+      (e: any) => (e.verification_status || '').toLowerCase() === 'verified',
+    ).length;
+
+    const candidatesUnderReviewCount = allJobs.reduce(
+      (sum: number, j: any) => sum + Number(j.candidates_under_review || 0),
+      0,
+    );
+
+    const successfulPlacementsCount = allJobs.reduce(
+      (sum: number, j: any) => sum + Number(j.successful_placements || 0),
+      0,
+    );
+
+    return {
+      period,
+      metrics: {
+        applications: {
+          count: currentAppsCount || allApps.length,
+          changePercent: applicationsChangePercent,
+        },
+        cohortRetention: {
+          percentage: cohortRetentionRate,
+          changePercent: retentionChangePercent,
+        },
+        placementRate: {
+          percentage: placementRatePercent,
+          changePercent: placementChangePercent,
+        },
+        revenueYtd: {
+          amount: Number(revenueYtd.toFixed(2)),
+          changePercent: revenueYtdChangePercent,
+        },
+      },
+      applicationFunnel: funnel,
+      revenueTrend: {
+        currentQuarterTotal: Number(currentQuarterRevenue.toFixed(2)),
+        quarterChangePercent: quarterRevenueChangePercent,
+        monthlyRevenue,
+      },
+      cohortPerformance,
+      mentorPerformance: {
+        averageRating: averageMentorRating,
+        sessionsCompleted: completedSessionsCount,
+        overdueFeedbackReviews: overdueFeedbackReviewsCount,
+      },
+      employerActivity: {
+        verifiedEmployers: verifiedEmployersCount,
+        candidatesUnderReview: candidatesUnderReviewCount,
+        successfulPlacements: successfulPlacementsCount,
+      },
+    };
+  }
+
+  // ==========================================
+  // ADMIN APPLICANT DETAIL PAGE
+  // ==========================================
+  async getApplicantDetailById(applicantId: string) {
+    const { data: app, error } = await this.supabase
+      .from('applications')
+      .select('*')
+      .eq('id', applicantId)
+      .maybeSingle();
+
+    if (error || !app) {
+      throw new NotFoundException('Applicant not found');
+    }
+
+    const [
+      { data: profile },
+      { data: details },
+      { data: cohorts },
+      { data: mentors },
+      { data: profiles },
+      { data: auditLogs },
+    ] = await Promise.all([
+      app.profile_id
+        ? this.supabase
+            .from('profiles')
+            .select('id, first_name, last_name, email, role, created_at')
+            .eq('id', app.profile_id)
+            .maybeSingle()
+        : this.supabase
+            .from('profiles')
+            .select('id, first_name, last_name, email, role, created_at')
+            .eq('email', app.email)
+            .maybeSingle(),
+      app.profile_id
+        ? this.supabase
+            .from('applicant_details')
+            .select('*')
+            .eq('profile_id', app.profile_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+      this.supabase.from('cohorts').select('id, name, start_date, end_date'),
+      this.supabase.from('mentors').select('id, profile_id, profession, bio'),
+      this.supabase.from('profiles').select('id, first_name, last_name, email'),
+      this.supabase
+        .from('admin_audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100),
+    ]);
+
+    const cohortsById = new Map<string, any>();
+    for (const c of cohorts || []) cohortsById.set(c.id, c);
+
+    const profilesById = new Map<string, any>();
+    for (const p of profiles || []) profilesById.set(p.id, p);
+
+    const assignedMentorId = details?.mentor_id || null;
+    const mentorRec = (mentors || []).find((m: any) => m.id === assignedMentorId);
+    const mentorProfile = mentorRec ? profilesById.get(mentorRec.profile_id) : null;
+    const assignedMentorName = mentorProfile
+      ? `${mentorProfile.first_name || ''} ${mentorProfile.last_name || ''}`.trim()
+      : null;
+
+    const cohortObj = app.cohort_id ? cohortsById.get(app.cohort_id) : null;
+    const cohortLabel = app.cohort_name || cohortObj?.name || 'Unassigned Cohort';
+
+    const isOnboarding =
+      app.application_status === 'Accepted' ||
+      ['Onboarding', 'Active'].includes(details?.stage || '');
+
+    const completedSteps = Number(app.current_stage || 1);
+    const applicationScorePercent = Math.min(
+      100,
+      Math.max(0, Math.round((completedSteps / 4) * 100)),
+    );
+    const assessmentScorePercent = Number(app.assessment_score ?? 0);
+    const isPaid =
+      (app.payment_status || '').toLowerCase() === 'successful' ||
+      (app.payment_status || '').toLowerCase() === 'paid';
+
+    const riskLevel: 'Low' | 'Medium' | 'High' =
+      app.risk_level ||
+      (assessmentScorePercent < 40 ? 'High' : assessmentScorePercent < 70 ? 'Medium' : 'Low');
+
+    const interviewIndication: 'Passed' | 'Failed' | 'Pending' =
+      app.interview_status ||
+      (['Cohort Match', 'Onboarding', 'Active'].includes(details?.stage || '')
+        ? 'Passed'
+        : 'Pending');
+
+    const relevantLogs = (auditLogs || []).filter((log: any) => {
+      const desc = String(log.description || '').toLowerCase();
+      return (
+        desc.includes(app.id.toLowerCase()) ||
+        desc.includes(String(app.email || '').toLowerCase()) ||
+        (app.reference_code && desc.includes(String(app.reference_code).toLowerCase()))
+      );
+    });
+
+    return {
+      applicant: {
+        id: app.id,
+        profileId: app.profile_id || profile?.id || null,
+        name: `${app.first_name || ''} ${app.last_name || ''}`.trim() || 'Applicant',
+        email: app.email,
+        track: app.track,
+        cohort: cohortLabel,
+        cohortId: app.cohort_id,
+        applicationStatus: app.application_status,
+        onboardingIndication: isOnboarding ? 'Onboarding' : 'Not Onboarding',
+        isOnboarding,
+        actions: ['Approve', 'Reject', 'Assign Mentor'] as const,
+      },
+      metrics: {
+        applicationScorePercent,
+        paymentStatus: isPaid ? 'Paid' : 'Not Paid',
+        paymentStatusRaw: app.payment_status,
+        assessmentPercent: assessmentScorePercent,
+        riskLevel,
+      },
+      personalAndEducation: {
+        country: app.country,
+        state: app.state || details?.location || 'N/A',
+        phoneNumber: app.phone_number || details?.phone_number || 'N/A',
+        education: app.education || 'N/A',
+        experience: {
+          track: app.track,
+          years: Number(app.years_of_experience ?? 0),
+          level: app.experience_level || 'Beginner',
+        },
+        preferredTrack: app.track,
+        documents: {
+          cv: app.resume_url || details?.resume_url || null,
+          portfolio: app.portfolio_link || details?.portfolio_link || null,
+          idDocument: app.id_document_url || null,
+          linkedin: app.linkedin_link || details?.linkedin_link || null,
+        },
+      },
+      applicationSummary: {
+        dateApplied: this.formatShortDate(app.created_at),
+        dateAppliedIso: app.created_at,
+        sourceAppliedThrough: app.source_channel || 'Web Portal',
+        completedSteps,
+        totalSteps: 4,
+        assessmentScorePercent,
+        interviewIndication,
+        mentorAssigned: assignedMentorName || 'Unassigned',
+        mentorId: assignedMentorId,
+        adminNote: app.admin_note || '',
+      },
+      activityAndStatusHistory: {
+        dateApplicationStarted: this.formatShortDate(app.created_at),
+        dateApplicationSubmitted:
+          app.application_status !== 'Draft'
+            ? this.formatShortDate(app.updated_at || app.created_at)
+            : 'Pending',
+        datePaymentConfirmed:
+          app.paid_at || isPaid
+            ? this.formatShortDate(app.paid_at || app.updated_at)
+            : 'Pending',
+        dateInterviewCompleted: app.interview_completed_at
+          ? this.formatShortDate(app.interview_completed_at)
+          : details?.interview_at
+            ? this.formatShortDate(details.interview_at)
+            : 'Pending',
+        dateMovedToOnboarding: details?.onboarding_at
+          ? this.formatShortDate(details.onboarding_at)
+          : isOnboarding
+            ? this.formatShortDate(app.updated_at)
+            : 'Pending',
+      },
+      auditLogEndpoint: `/admin/applicants/${app.id}/audit-log`,
+      recentAuditLogs: relevantLogs.slice(0, 10),
+    };
+  }
+
+  async getApplicantAuditLog(applicantId: string) {
+    const { data: app, error } = await this.supabase
+      .from('applications')
+      .select('id, email, reference_code, first_name, last_name')
+      .eq('id', applicantId)
+      .maybeSingle();
+
+    if (error || !app) throw new NotFoundException('Applicant not found');
+
+    const { data: logs, error: logsErr } = await this.supabase
+      .from('admin_audit_logs')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (logsErr) throw new BadRequestException(logsErr.message);
+
+    const matching = (logs || []).filter((log: any) => {
+      const desc = String(log.description || '').toLowerCase();
+      return (
+        desc.includes(app.id.toLowerCase()) ||
+        desc.includes(String(app.email || '').toLowerCase()) ||
+        (app.reference_code && desc.includes(String(app.reference_code).toLowerCase()))
+      );
+    });
+
+    return {
+      applicantId: app.id,
+      applicantName: `${app.first_name || ''} ${app.last_name || ''}`.trim(),
+      email: app.email,
+      totalLogs: matching.length,
+      logs: matching,
+    };
+  }
+
+  async approveApplicantDetail(
+    applicantId: string,
+    dto: ApproveApplicantsDto,
+    adminName = 'Admin',
+  ) {
+    const { data: app, error } = await this.supabase
+      .from('applications')
+      .select('*')
+      .eq('id', applicantId)
+      .maybeSingle();
+
+    if (error || !app) throw new NotFoundException('Applicant not found');
+
+    const nowIso = new Date().toISOString();
+    const nextNote = dto.adminNote ?? app.admin_note ?? null;
+
+    const { data: updatedApp, error: updErr } = await this.supabase
+      .from('applications')
+      .update({
+        application_status: 'Accepted',
+        admin_note: nextNote,
+        updated_at: nowIso,
+      })
+      .eq('id', applicantId)
+      .select()
+      .single();
+
+    if (updErr) throw new BadRequestException(updErr.message);
+
+    if (app.profile_id) {
+      await this.supabase.from('applicant_details').upsert(
+        {
+          profile_id: app.profile_id,
+          profession: app.track || 'Applicant',
+          cohort_id: app.cohort_id || null,
+          mentor_id: dto.mentorId || null,
+          stage: 'Onboarding',
+          onboarding_at: nowIso,
+          portfolio_link: app.portfolio_link || null,
+          resume_url: app.resume_url || null,
+          linkedin_link: app.linkedin_link || null,
+        },
+        { onConflict: 'profile_id' },
+      );
+
+      await this.supabase.from('notifications').insert({
+        profile_id: app.profile_id,
+        title: 'Application Approved & Moved to Onboarding',
+        message: `Your application for ${app.track} has been approved. Welcome to onboarding!`,
+        type: 'cohort',
+      });
+    }
+
+    const portalUrl = process.env.FRONTEND_PORTAL_URL || 'https://app.pnafrica.com/register';
+    await this.emailService.sendAdmissionAcceptanceEmail(
+      app.email,
+      `${app.first_name} ${app.last_name}`.trim(),
+      portalUrl,
+    );
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: app.cohort_id || null,
+      actor_name: adminName,
+      action_type: 'ACCOUNT_APPROVED',
+      description: `Approved applicant ${app.email} (${applicantId}) and moved to Onboarding${
+        dto.mentorId ? ` with mentor ${dto.mentorId}` : ''
+      }`,
+    });
+
+    await this.emailService.sendAdmissionAcceptanceEmail(
+      app.email,
+      `${app.first_name} ${app.last_name}`.trim(),
+      'https://www.pnafrica.com/register',
+      {
+        cohortName: app.cohort_name || undefined,
+        cohortGroupLink: process.env.APPLICANT_COHORT_GROUP_LINK,
+        loginLink: 'https://www.pnafrica.com/login',
+      },
+    );
+
+    return {
+      message: 'Applicant approved and moved to onboarding',
+      applicant: updatedApp,
+    };
+  }
+
+  async rejectApplicantDetail(
+    applicantId: string,
+    dto: RejectApplicantsDto,
+    adminName = 'Admin',
+  ) {
+    const { data: app, error } = await this.supabase
+      .from('applications')
+      .select('*')
+      .eq('id', applicantId)
+      .maybeSingle();
+
+    if (error || !app) throw new NotFoundException('Applicant not found');
+
+    const nowIso = new Date().toISOString();
+    const noteToSave = dto.adminNote ?? dto.reason ?? app.admin_note ?? null;
+
+    const { data: updatedApp, error: updErr } = await this.supabase
+      .from('applications')
+      .update({
+        application_status: 'Rejected',
+        admin_note: noteToSave,
+        updated_at: nowIso,
+      })
+      .eq('id', applicantId)
+      .select()
+      .single();
+
+    if (updErr) throw new BadRequestException(updErr.message);
+
+    if (dto.reason) {
+      await this.emailService.sendEmail(
+        app.email,
+        'Application Status Update - PN Africa',
+        `<p>Hello ${app.first_name},</p><p>Thank you for applying to PN Africa. After reviewing your application, we are unable to move forward at this time.</p><p><strong>Notes:</strong> ${dto.reason}</p>`,
+      );
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: app.cohort_id || null,
+      actor_name: adminName,
+      action_type: 'APPLICATION_SUBMITTED',
+      description: `Rejected applicant ${app.email} (${applicantId})${
+        dto.reason ? `: ${dto.reason}` : ''
+      }`,
+    });
+
+    return { message: 'Applicant rejected', applicant: updatedApp };
+  }
+
+  async assignMentorToApplicant(
+    applicantId: string,
+    dto: AssignApplicantsMentorDto,
+    adminName = 'Admin',
+  ) {
+    const { data: app, error: appErr } = await this.supabase
+      .from('applications')
+      .select('*')
+      .eq('id', applicantId)
+      .maybeSingle();
+
+    if (appErr || !app) throw new NotFoundException('Applicant not found');
+
+    const { data: mentor, error: mentorErr } = await this.supabase
+      .from('mentors')
+      .select('id, profile_id, profession')
+      .eq('id', dto.mentorId)
+      .maybeSingle();
+
+    if (mentorErr || !mentor) throw new NotFoundException('Mentor not found');
+
+    const nowIso = new Date().toISOString();
+    if (dto.adminNote) {
+      await this.supabase
+        .from('applications')
+        .update({ admin_note: dto.adminNote, updated_at: nowIso })
+        .eq('id', applicantId);
+    }
+
+    if (app.profile_id) {
+      await this.supabase.from('applicant_details').upsert(
+        {
+          profile_id: app.profile_id,
+          profession: app.track || 'Applicant',
+          cohort_id: app.cohort_id || null,
+          mentor_id: mentor.id,
+          stage: app.application_status === 'Accepted' ? 'Onboarding' : 'Cohort Match',
+          cohort_match_at: nowIso,
+        },
+        { onConflict: 'profile_id' },
+      );
+
+      await this.supabase.from('notifications').insert({
+        profile_id: app.profile_id,
+        title: 'Mentor Assigned',
+        message: 'A mentor has been assigned to support your PN Africa journey.',
+        type: 'mentor',
+      });
+    }
+
+    await this.supabase.from('mentor_activities').insert({
+      mentor_id: mentor.id,
+      activity_title: `Accepted new mentee assignment (${app.first_name} ${app.last_name})`,
+      activity_type: 'Meeting',
+      created_at: nowIso,
+    });
+
+    await this.supabase
+      .from('mentors')
+      .update({ last_accepted_mentee_at: nowIso })
+      .eq('id', mentor.id);
+
+    await this.supabase.from('admin_audit_logs').insert({
+      cohort_id: app.cohort_id || null,
+      actor_name: adminName,
+      action_type: 'MENTOR_VERIFIED',
+      description: `Assigned mentor ${mentor.id} to applicant ${app.email} (${applicantId})`,
+    });
+
+    return {
+      message: 'Mentor assigned to applicant',
+      applicantId,
+      mentorId: mentor.id,
+    };
+  }
+
+  // ==========================================
+  // ADMIN MENTOR DETAIL PAGE
+  // ==========================================
+  async getMentorFullDetailById(mentorId: string) {
+    const { data: mentor, error } = await this.supabase
+      .from('mentors')
+      .select('*')
+      .eq('id', mentorId)
+      .maybeSingle();
+
+    if (error || !mentor) {
+      throw new NotFoundException('Mentor not found');
+    }
+
+    const nowMs = Date.now();
+    const overdueCutoffMs = nowMs - 48 * 60 * 60 * 1000;
+
+    const [
+      { data: profile },
+      { data: mentees },
+      { data: sessions },
+      { data: submissions },
+      { data: activities },
+      { data: teams },
+      { data: auditLogs },
+    ] = await Promise.all([
+      this.supabase
+        .from('profiles')
+        .select('id, first_name, last_name, email, avatar_url, is_active, status, created_at')
+        .eq('id', mentor.profile_id)
+        .maybeSingle(),
+      this.supabase
+        .from('applicant_details')
+        .select('id, profile_id, team_id, completion_percentage, stage, created_at')
+        .eq('mentor_id', mentor.id),
+      this.supabase
+        .from('mentor_sessions')
+        .select('id, session_title, session_date, status')
+        .eq('mentor_id', mentor.id)
+        .order('session_date', { ascending: false }),
+      this.supabase
+        .from('mentee_submissions')
+        .select('id, title, status, submitted_at, reviewed_at')
+        .eq('mentor_id', mentor.id)
+        .order('submitted_at', { ascending: false }),
+      this.supabase
+        .from('mentor_activities')
+        .select('id, activity_title, activity_type, created_at')
+        .eq('mentor_id', mentor.id)
+        .order('created_at', { ascending: false }),
+      this.supabase.from('teams').select('id, name'),
+      this.supabase
+        .from('admin_audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100),
+    ]);
+
+    const allMentees = mentees || [];
+    const allSessions = sessions || [];
+    const allSubmissions = submissions || [];
+    const allActivities = activities || [];
+
+    // Metrics
+    const mentorRating = Number(mentor.rating ?? 4.8);
+    const menteeCapacity = Number(mentor.max_capacity ?? 10);
+    const sessionsCompletedCount = allSessions.filter(
+      (s: any) => (s.status || '').toLowerCase() === 'completed',
+    ).length;
+    const overdueReviewsCount = allSubmissions.filter(
+      (sub: any) =>
+        sub.status === 'Pending Review' &&
+        new Date(sub.submitted_at).getTime() < overdueCutoffMs,
+    ).length;
+
+    // Assignment & Performance
+    const teamById = new Map<string, string>();
+    for (const t of teams || []) teamById.set(t.id, t.name);
+
+    const assignedTeamName =
+      (mentor.assigned_team_id && teamById.get(mentor.assigned_team_id)) ||
+      (allMentees[0]?.team_id && teamById.get(allMentees[0].team_id)) ||
+      'Unassigned Team';
+
+    const reviewedSubs = allSubmissions.filter((sub: any) => sub.reviewed_at);
+    const avgTurnaroundHours =
+      reviewedSubs.length > 0
+        ? Number(
+            (
+              reviewedSubs.reduce((sum: number, sub: any) => {
+                const diffHrs = Math.max(
+                  0,
+                  (new Date(sub.reviewed_at).getTime() -
+                    new Date(sub.submitted_at).getTime()) /
+                    (1000 * 60 * 60),
+                );
+                return sum + diffHrs;
+              }, 0) / reviewedSubs.length
+            ).toFixed(1),
+          )
+        : 18;
+
+    const attendedSessions = allSessions.filter((s: any) =>
+      ['completed', 'in session'].includes((s.status || '').toLowerCase()),
+    ).length;
+    const sessionAttendancePercent =
+      allSessions.length > 0
+        ? Number(((attendedSessions / allSessions.length) * 100).toFixed(1))
+        : 100;
+
+    const menteeCompletionRatePercent =
+      allMentees.length > 0
+        ? Number(
+            (
+              allMentees.reduce(
+                (sum: number, m: any) => sum + Number(m.completion_percentage || 0),
+                0,
+              ) / allMentees.length
+            ).toFixed(1),
+          )
+        : 0;
+
+    // Activity & Status History
+    const lastFeedbackSub = allSubmissions.find((sub: any) => sub.reviewed_at);
+    const lastFeedbackActivity = allActivities.find((act: any) =>
+      ['feedback', 'review', 'validation'].includes((act.activity_type || '').toLowerCase()),
+    );
+    const lastFeedbackDate =
+      lastFeedbackSub?.reviewed_at || lastFeedbackActivity?.created_at || null;
+
+    const officeHoursActivity = allActivities.find((act: any) =>
+      (act.activity_type || '').toLowerCase() === 'meeting',
+    );
+    const officeHoursDate =
+      mentor.last_office_hours_at || officeHoursActivity?.created_at || null;
+
+    const acceptedDateRaw =
+      mentor.last_accepted_mentee_at ||
+      allMentees[0]?.created_at ||
+      allActivities.find((act: any) =>
+        String(act.activity_title || '').toLowerCase().includes('mentee'),
+      )?.created_at ||
+      null;
+
+    const daysSinceAcceptedMentee = acceptedDateRaw
+      ? Math.max(
+          0,
+          Math.floor((nowMs - new Date(acceptedDateRaw).getTime()) / (24 * 60 * 60 * 1000)),
+        )
+      : null;
+
+    const relevantAuditLogs = (auditLogs || []).filter((log: any) => {
+      const desc = String(log.description || '').toLowerCase();
+      return (
+        desc.includes(mentor.id.toLowerCase()) ||
+        (profile?.email && desc.includes(String(profile.email).toLowerCase()))
+      );
+    });
+
+    const isVerified = (mentor.verification_status || 'Approved') === 'Approved';
+
+    return {
+      mentor: {
+        id: mentor.id,
+        profileId: mentor.profile_id,
+        name: profile
+          ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim()
+          : 'Mentor',
+        profession: mentor.profession,
+        email: profile?.email || '',
+        country: mentor.country || 'N/A',
+        state: mentor.state || 'N/A',
+        dateJoined: profile?.created_at
+          ? this.formatShortDate(profile.created_at)
+          : this.formatShortDate(mentor.created_at),
+        verificationIndication: isVerified ? 'Verified' : 'Unverified',
+        isVerified,
+        isActive: mentor.is_active !== false && profile?.is_active !== false,
+        actions: ['Message', 'Edit Profile', 'Suspend'] as const,
+      },
+      metrics: {
+        rating: Number(mentorRating.toFixed(1)),
+        menteeCapacity,
+        assignedMenteesCount: allMentees.length,
+        sessionsCompleted: sessionsCompletedCount,
+        overdueReviews: overdueReviewsCount,
+      },
+      professionalProfile: {
+        expertiseOrSkills: mentor.profession,
+        bio: mentor.bio || '',
+        yearsOfExperience: Number(mentor.years_of_experience ?? 1),
+        availability: `${Number(mentor.weekly_availability_hours ?? 6)} hrs per week`,
+        links: {
+          linkedin: mentor.linkedin_url || null,
+          portfolio: mentor.portfolio_url || null,
+          verified: Boolean(mentor.links_verified),
+        },
+        documents: {
+          cv: mentor.cv_url || null,
+          idDocument: mentor.id_doc_url || null,
+          reference: mentor.reference_doc_url || null,
+          checked: Boolean(mentor.documents_checked),
+        },
+      },
+      assignmentAndPerformance: {
+        assignedTeam: assignedTeamName,
+        averageFeedbackTurnaround: `${avgTurnaroundHours} hrs`,
+        sessionAttendancePercent,
+        menteeCompletionRatePercent,
+        nextCapacityReview: mentor.next_capacity_review_at
+          ? this.formatShortDate(mentor.next_capacity_review_at)
+          : 'TBD',
+      },
+      activityAndStatusHistory: {
+        completedFeedbackToAssignedTeam: lastFeedbackDate
+          ? {
+              date: this.formatShortDate(lastFeedbackDate),
+              time: new Date(lastFeedbackDate).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
+              day: new Date(lastFeedbackDate).toLocaleDateString('en-US', {
+                weekday: 'long',
+              }),
+            }
+          : null,
+        cohortOfficeHours: officeHoursDate
+          ? {
+              date: this.formatShortDate(officeHoursDate),
+              window: mentor.last_office_hours_window || '10:00 AM - 11:00 AM WAT',
+              timeSince: this.formatLastActive(officeHoursDate),
+            }
+          : null,
+        daysSinceAcceptedNewMenteeAssignment: daysSinceAcceptedMentee,
+        ratingUpdate: mentor.rating_updated_at
+          ? {
+              fromRating: Number(mentor.previous_rating ?? mentorRating).toFixed(1),
+              toRating: Number(mentorRating).toFixed(1),
+              timeSinceUpdated: this.formatLastActive(mentor.rating_updated_at),
+              updatedAt: mentor.rating_updated_at,
+            }
+          : null,
+        verificationApproval: isVerified
+          ? {
+              approvedBy: mentor.verified_by || 'Admin',
+              date: mentor.verified_at
+                ? this.formatShortDate(mentor.verified_at)
+                : this.formatShortDate(mentor.created_at),
+            }
+          : null,
+      },
+      auditLogEndpoint: `/admin/mentors/${mentor.id}/audit-log`,
+      recentAuditLogs: relevantAuditLogs.slice(0, 10),
+    };
+  }
+
+  async getMentorAuditLog(mentorId: string) {
+    const { data: mentor, error } = await this.supabase
+      .from('mentors')
+      .select('id, profile_id')
+      .eq('id', mentorId)
+      .maybeSingle();
+
+    if (error || !mentor) throw new NotFoundException('Mentor not found');
+
+    const { data: profile } = await this.supabase
+      .from('profiles')
+      .select('first_name, last_name, email')
+      .eq('id', mentor.profile_id)
+      .maybeSingle();
+
+    const { data: logs, error: logsErr } = await this.supabase
+      .from('admin_audit_logs')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (logsErr) throw new BadRequestException(logsErr.message);
+
+    const matching = (logs || []).filter((log: any) => {
+      const desc = String(log.description || '').toLowerCase();
+      return (
+        desc.includes(mentor.id.toLowerCase()) ||
+        (profile?.email && desc.includes(String(profile.email).toLowerCase()))
+      );
+    });
+
+    return {
+      mentorId: mentor.id,
+      mentorName: profile
+        ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim()
+        : 'Mentor',
+      totalLogs: matching.length,
+      logs: matching,
+    };
+  }
+
+  async editMentorDetail(
+    mentorId: string,
+    dto: EditMentorDetailDto,
+    adminName = 'Admin',
+  ) {
+    const { data: mentor, error } = await this.supabase
+      .from('mentors')
+      .select('*')
+      .eq('id', mentorId)
+      .maybeSingle();
+
+    if (error || !mentor) throw new NotFoundException('Mentor not found');
+
+    const nowIso = new Date().toISOString();
+    const mentorPatch: Record<string, any> = {};
+
+    if (dto.profession !== undefined) mentorPatch.profession = dto.profession.trim();
+    if (dto.country !== undefined) mentorPatch.country = dto.country.trim();
+    if (dto.state !== undefined) mentorPatch.state = dto.state.trim();
+    if (dto.yearsOfExperience !== undefined)
+      mentorPatch.years_of_experience = dto.yearsOfExperience;
+    if (dto.weeklyAvailabilityHours !== undefined)
+      mentorPatch.weekly_availability_hours = dto.weeklyAvailabilityHours;
+    if (dto.maxCapacity !== undefined) mentorPatch.max_capacity = dto.maxCapacity;
+    if (dto.linkedinUrl !== undefined) mentorPatch.linkedin_url = dto.linkedinUrl;
+    if (dto.portfolioUrl !== undefined) mentorPatch.portfolio_url = dto.portfolioUrl;
+    if (dto.linksVerified !== undefined) mentorPatch.links_verified = dto.linksVerified;
+    if (dto.documentsChecked !== undefined) mentorPatch.documents_checked = dto.documentsChecked;
+    if (dto.bio !== undefined) mentorPatch.bio = dto.bio;
+
+    if (dto.rating !== undefined && Number(dto.rating) !== Number(mentor.rating)) {
+      mentorPatch.previous_rating = Number(mentor.rating ?? 4.8);
+      mentorPatch.rating = Number(dto.rating);
+      mentorPatch.rating_updated_at = nowIso;
+    }
+
+    if (dto.verificationStatus !== undefined) {
+      mentorPatch.verification_status = dto.verificationStatus;
+      if (dto.verificationStatus === 'Approved') {
+        mentorPatch.verified_by = adminName;
+        mentorPatch.verified_at = nowIso;
+      }
+    }
+
+    if (Object.keys(mentorPatch).length > 0) {
+      const { error: mErr } = await this.supabase
+        .from('mentors')
+        .update(mentorPatch)
+        .eq('id', mentorId);
+      if (mErr) throw new BadRequestException(mErr.message);
+    }
+
+    if (dto.firstName !== undefined || dto.lastName !== undefined) {
+      const profilePatch: Record<string, any> = { updated_at: nowIso };
+      if (dto.firstName !== undefined) profilePatch.first_name = dto.firstName.trim();
+      if (dto.lastName !== undefined) profilePatch.last_name = dto.lastName.trim();
+
+      await this.supabase
+        .from('profiles')
+        .update(profilePatch)
+        .eq('id', mentor.profile_id);
+    }
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'MENTOR_VERIFIED',
+      description: `Edited mentor profile (${mentorId}): ${JSON.stringify(dto)}`,
+    });
+
+    return this.getMentorFullDetailById(mentorId);
+  }
+
+  async suspendMentorDetail(
+    mentorId: string,
+    dto: SuspendMentorDetailDto,
+    adminName = 'Admin',
+  ) {
+    const { data: mentor, error } = await this.supabase
+      .from('mentors')
+      .select('*')
+      .eq('id', mentorId)
+      .maybeSingle();
+
+    if (error || !mentor) throw new NotFoundException('Mentor not found');
+
+    const nowIso = new Date().toISOString();
+    await this.supabase
+      .from('mentors')
+      .update({ is_active: false })
+      .eq('id', mentorId);
+
+    await this.supabase
+      .from('profiles')
+      .update({ is_active: false, status: 'Suspended', updated_at: nowIso })
+      .eq('id', mentor.profile_id);
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'MENTOR_VERIFIED',
+      description: `Suspended mentor ${mentorId}${dto.reason ? `: ${dto.reason}` : ''}`,
+    });
+
+    return {
+      message: 'Mentor suspended successfully',
+      mentorId,
+      reason: dto.reason || null,
+    };
+  }
+
+  async approveMentorApplication(mentorApplicationId: string, adminName = 'Admin') {
+    const { data: app, error } = await this.supabase
+      .from('mentor_applications')
+      .select('*')
+      .eq('id', mentorApplicationId)
+      .maybeSingle();
+
+    if (error || !app) {
+      throw new NotFoundException('Mentor application not found');
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data: updated, error: updErr } = await this.supabase
+      .from('mentor_applications')
+      .update({
+        application_status: 'Accepted',
+        reviewed_by: adminName,
+        reviewed_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('id', mentorApplicationId)
+      .select()
+      .single();
+
+    if (updErr) throw new BadRequestException(updErr.message);
+
+    await this.emailService.sendMentorAcceptanceEmail(
+      app.email,
+      `${app.first_name} ${app.last_name}`.trim(),
+      'https://www.pnafrica.com/register',
+      {
+        mentorGroupLink: process.env.MENTOR_COHORT_GROUP_LINK,
+        loginLink: 'https://www.pnafrica.com/login',
+      },
+    );
+
+    await this.supabase.from('admin_audit_logs').insert({
+      actor_name: adminName,
+      action_type: 'MENTOR_VERIFIED',
+      description: `Accepted mentor application for ${app.email} (${mentorApplicationId})`,
+    });
+
+    return {
+      message: 'Mentor application accepted and acceptance email sent',
+      application: updated,
+    };
   }
 }

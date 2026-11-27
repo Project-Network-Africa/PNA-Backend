@@ -40,14 +40,31 @@ import {
 import {
   AdminPaymentsQueryDto,
   ResolvePaymentActionDto,
-  
 } from './dto/admin-payments-page.dto.js';
 import {
   AdminCohortsQueryDto,
   CreateAdminCohortPageDto,
   UpdateAdminCohortPageDto,
 } from './dto/admin-cohorts-page.dto.js';
-
+import {
+    AdminAnalyticsQueryDto,
+} from './dto/admin-analytics.dto.js'
+import {
+    AdminContentQueryDto,
+    CreateAdminContentDto,
+    UpdateAdminContentDto,
+    BulkContentActionDto,
+} from './dto/admin-content.dto.js'
+import{
+    MessageMentorDetailDto,
+    EditMentorDetailDto,
+    SuspendMentorDetailDto,
+} from './dto/admin-mentor-detail.dto.js'
+import {
+  ApproveApplicantsDto,
+  AssignApplicantsMentorDto,
+  RejectApplicantsDto,
+} from './dto/admin-applicant-detail.dto.js';
 @ApiTags('Admin Portal - Dashboard')
 @Controller('admin')
 export class AdminController {
@@ -117,12 +134,6 @@ export class AdminController {
   @ApiOperation({ summary: 'Export filtered applicants list as CSV' })
   async exportApplicants(@Query() query: AdminApplicantsQueryDto) {
     return this.adminService.exportApplicantsCsv(query);
-  }
-
-  @Get('applicants/:id')
-  @ApiOperation({ summary: 'View detailed record for a single applicant' })
-  async getApplicantDetail(@Param('id') id: string) {
-    return this.adminService.getApplicantDetailById(id);
   }
 
   @Patch('applicants/:id/assign-mentor')
@@ -298,5 +309,139 @@ export class AdminController {
     @Body() dto: UpdateAdminCohortPageDto,
   ) {
     return this.adminService.updateAdminCohortPage(id, dto);
+  }
+
+  // ==========================================
+  // ADMIN CONTENT MANAGEMENT PAGE ROUTES
+  // ==========================================
+  @Get('content')
+  @ApiOperation({
+    summary: 'Get Admin Content Management metrics, filter/sort controls, and tabular items',
+  })
+  async getContentManagement(@Query() query: AdminContentQueryDto) {
+    return this.adminService.getContentManagementPageData(query);
+  }
+
+  @Post('content')
+  @ApiOperation({ summary: 'Create a new CMS content item' })
+  async createContent(@Body() dto: CreateAdminContentDto) {
+    return this.adminService.createAdminContent(dto);
+  }
+
+  @Post('content/bulk-action')
+  @ApiOperation({ summary: 'Run bulk actions across selected CMS content items' })
+  async bulkContentAction(@Body() dto: BulkContentActionDto) {
+    return this.adminService.bulkContentAction(dto);
+  }
+
+  @Get('content/:id')
+  @ApiOperation({ summary: 'View full details of a CMS content item' })
+  async getContentById(@Param('id') id: string) {
+    return this.adminService.getContentById(id);
+  }
+
+  @Patch('content/:id')
+  @ApiOperation({ summary: 'Edit or review a CMS content item' })
+  async updateContent(
+    @Param('id') id: string,
+    @Body() dto: UpdateAdminContentDto,
+  ) {
+    return this.adminService.updateAdminContent(id, dto);
+  }
+
+  // ==========================================
+  // ADMIN ANALYTICS PAGE ROUTE
+  // ==========================================
+  @Get('analytics')
+  @ApiOperation({
+    summary:
+      'Get Admin Analytics page metrics, application funnel, revenue trend, cohort performance, mentor performance, and employer activity',
+  })
+  async getAnalytics(@Query() query: AdminAnalyticsQueryDto) {
+    return this.adminService.getAnalyticsPageData(query);
+  }
+
+  // ==========================================
+  // ADMIN APPLICANT DETAIL ROUTES
+  // ==========================================
+  @Get('applicants/:id/detail')
+  @ApiOperation({ summary: 'Get full Applicant Detail page payload' })
+  async getApplicantDetail(@Param('id') id: string) {
+    return this.adminService.getApplicantDetailById(id);
+  }
+
+  @Get('applicants/:id/audit-log')
+  @ApiOperation({ summary: 'Get full audit log for a specific applicant' })
+  async getApplicantAuditLog(@Param('id') id: string) {
+    return this.adminService.getApplicantAuditLog(id);
+  }
+
+  @Post('applicants/:id/approve')
+  @ApiOperation({ summary: 'Approve applicant and move to onboarding' })
+  async approveApplicantDetail(
+    @Param('id') id: string,
+    @Body() dto: ApproveApplicantsDto,
+  ) {
+    return this.adminService.approveApplicantDetail(id, dto);
+  }
+
+  @Post('applicants/:id/reject')
+  @ApiOperation({ summary: 'Reject applicant' })
+  async rejectApplicantDetail(
+    @Param('id') id: string,
+    @Body() dto: RejectApplicantsDto,
+  ) {
+    return this.adminService.rejectApplicantDetail(id, dto);
+  }
+
+  @Post('applicants/:id/assign-mentor')
+  @ApiOperation({ summary: 'Assign a mentor to an applicant' })
+  async assignMentorToApplicant(
+    @Param('id') id: string,
+    @Body() dto: AssignApplicantMentorDto,
+  ) {
+    return this.adminService.assignMentorToApplicant(id, dto);
+  }
+
+  // ==========================================
+  // ADMIN MENTOR DETAIL ROUTES
+  // ==========================================
+  @Get('mentors/:id/detail')
+  @ApiOperation({ summary: 'Get full Mentor Detail page payload' })
+  async getMentorFullDetail(@Param('id') id: string) {
+    return this.adminService.getMentorFullDetailById(id);
+  }
+
+  @Get('mentors/:id/audit-log')
+  @ApiOperation({ summary: 'Get full audit log for a specific mentor' })
+  async getMentorAuditLog(@Param('id') id: string) {
+    return this.adminService.getMentorAuditLog(id);
+  }
+
+  @Post('mentors/:id/message')
+  @ApiOperation({ summary: 'Message a mentor from the Mentor Detail page' })
+  async messageMentorDetail(
+    @Param('id') id: string,
+    @Body() dto: MessageMentorDetailDto,
+  ) {
+    return this.adminService.contactMentor(id, dto);
+  }
+
+  @Patch('mentors/:id/profile')
+  @ApiOperation({ summary: 'Edit mentor profile, links/documents verification, and rating' })
+  async editMentorDetail(
+    @Param('id') id: string,
+    @Body() dto: EditMentorDetailDto,
+  ) {
+    return this.adminService.editMentorDetail(id, dto);
+  }
+
+  @Post('mentors/:id/suspend')
+  @ApiOperation({ summary: 'Suspend a mentor account' })
+  async suspendMentorDetail(
+    @Param('id') id: string,
+    @Body() dto: SuspendMentorDetailDto,
+  ) {
+    return this.adminService.suspendMentorDetail(id, dto);
   }
 }
