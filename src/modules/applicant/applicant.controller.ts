@@ -8,7 +8,8 @@ import { UpdateProfileDto } from './dto/update-profile.dto.js';
 import { ApplicantProjectsResponseDto } from './dto/project-response.dto.js';
 import { ProjectDetailResponseDto } from './dto/project-detail-response.dto.js';
 import { UploadTeamFileDto, TeamWorkspaceResponseDto } from './dto/team-workspace-response.dto.js';
-import { MentorshipResponseDto } from './dto/mentorship-response.dto.js';
+import { MentorshipResponseDto, RateMentorDto } from './dto/mentorship-response.dto.js';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { MakePaymentDto, PaymentPageResponseDto } from './dto/payment.dto.js';
 import { LearningResourcesResponseDto, SearchLearningResourceQueryDto } from './dto/learning-resources-response.dto.js';
 import { NotificationsResponseDto } from './dto/notification-response.dto.js';
@@ -143,6 +144,13 @@ export class ApplicantController {
   async getMentorshipData(@Req() req: any) {
     const userId = req.user?.id || req.headers['user-id'];
     return this.applicantService.getMentorshipData(userId);
+  }
+
+  @Post('mentorship/rating')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Rate my assigned mentor 1-5 (one rating per mentor, re-submitting updates it)' })
+  async rateMentor(@Req() req: any, @Body() dto: RateMentorDto) {
+    return this.applicantService.rateMentor(req.user.id, dto);
   }
 
   @Get('payments')
