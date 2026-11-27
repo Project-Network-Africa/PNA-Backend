@@ -9,16 +9,19 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: configService.getOrThrow<string>('JWT_SECRET'),
+      // Login returns Supabase's session access_token, so verify with the Supabase project's JWT secret.
+      // shortcut: HS256 legacy secret only; if the project uses asymmetric signing keys, switch to its JWKS endpoint
+      secretOrKey: configService.getOrThrow<string>('SUPABASE_JWT_SECRET'),
+      audience: 'authenticated',
     });
   }
 
   async validate(payload: any) {
-    // Maps `sub` from your token payload to `id` for req.user.id
-    return { 
-      id: payload.sub || payload.id || payload.userId, 
-      email: payload.email, 
-      role: payload.role 
+    return {
+      id: payload.sub,
+      email: payload.email,
+      // Supabase's top-level `role` is always "authenticated"; the app role lives in user_metadata
+      role: payload.user_metadata?.role ?? payload.role,
     };
   }
 }

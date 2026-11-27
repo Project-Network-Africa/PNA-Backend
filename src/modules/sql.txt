@@ -1029,3 +1029,103 @@ create table if not exists public.password_reset_tokens (
 );
 
 alter table public.password_reset_tokens enable row level security;
+
+-- ==========================================
+-- MENTOR PORTAL (Availability, Ratings, Progress history, Broadcasts, Reviews, Settings)
+-- ==========================================
+
+-- Weekly recurring office hours (replaces date-based mentor_availability for the mentor screen;
+-- mentor_availability is kept because applicant session booking still reads it)
+create table if not exists public.mentor_weekly_hours (
+  id uuid default uuid_generate_v4() primary key,
+  mentor_id uuid references public.mentors(id) on delete cascade not null,
+  day_of_week smallint not null check (day_of_week between 1 and 7), -- 1 = Monday (ISO)
+  start_time time,
+  end_time time,
+  enabled boolean not null default false,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique (mentor_id, day_of_week),
+  check (not enabled or (start_time is not null and end_time is not null and start_time < end_time))
+);
+alter table public.mentor_weekly_hours enable row level security;
+
+-- Mentee -> mentor ratings (one per mentee per mentor, editable)
+create table if not exists public.mentor_ratings (
+  id uuid default uuid_generate_v4() primary key,
+  mentor_id uuid references public.mentors(id) on delete cascade not null,
+  mentee_id uuid references public.profiles(id) on delete cascade not null,
+  rating smallint not null check (rating between 1 and 5),
+  comment text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique (mentor_id, mentee_id)
+);
+alter table public.mentor_ratings enable row level security;
+
+-- Progress history, filled by trigger so "+12% this month" needs no app code or cron
+create table if not exists public.applicant_progress_history (
+  id uuid default uuid_generate_v4() primary key,
+  profile_id uuid references public.profiles(id) on delete cascade not null,
+  old_percentage numeric(5,2) not null,
+  new_percentage numeric(5,2) not null,
+  recorded_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+create index if not exists applicant_progress_history_profile_idx
+  on public.applicant_progress_history (profile_id, recorded_at);
+alter table public.applicant_progress_history enable row level security;
+
+create or replace function public.log_applicant_progress() returns trigger as $$
+begin
+  if tg_op = 'INSERT' or new.completion_percentage is distinct from old.completion_percentage then
+    insert into public.applicant_progress_history (profile_id, old_percentage, new_percentage)
+    values (
+      new.profile_id,
+      coalesce(case when tg_op = 'UPDATE' then old.completion_percentage end, new.completion_percentage, 0),
+      coalesce(new.completion_percentage, 0)
+    );
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists applicant_progress_history_trg on public.applicant_details;
+create trigger applicant_progress_history_trg
+  after insert or update of completion_percentage on public.applicant_details
+  for each row execute function public.log_applicant_progress();
+
+-- Baseline row for existing applicants so next month's delta has a starting point
+insert into public.applicant_progress_history (profile_id, old_percentage, new_percentage)
+select profile_id, coalesce(completion_percentage, 0), coalesce(completion_percentage, 0)
+from public.applicant_details
+where not exists (
+  select 1 from public.applicant_progress_history h where h.profile_id = applicant_details.profile_id
+);
+
+-- Cohort broadcast history
+create table if not exists public.mentor_broadcasts (
+  id uuid default uuid_generate_v4() primary key,
+  mentor_id uuid references public.mentors(id) on delete cascade not null,
+  message text not null,
+  recipients_count integer not null default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+alter table public.mentor_broadcasts enable row level security;
+
+-- Reviews: due date, criteria checklist, "Changes Requested" decision
+alter table public.mentee_submissions
+  add column if not exists due_at timestamp with time zone default (timezone('utc'::text, now()) + interval '3 days'),
+  add column if not exists review_criteria jsonb not null default '[]'::jsonb;
+update public.mentee_submissions set due_at = submitted_at + interval '3 days' where due_at is null;
+alter table public.mentee_submissions drop constraint if exists mentee_submissions_status_check;
+alter table public.mentee_submissions add constraint mentee_submissions_status_check
+  check (status in ('Pending Review', 'Reviewed', 'Validated', 'Changes Requested'));
+
+-- Mentor settings
+alter table public.mentors
+  add column if not exists weekly_capacity integer not null default 10 check (weekly_capacity > 0),
+  add column if not exists show_profile_to_mentees boolean not null default true;
+
+-- Resource library split between applicants and mentors
+alter table public.learning_resources
+  add column if not exists audience text not null default 'applicant' check (audience in ('applicant', 'mentor')),
+  add column if not exists category text not null default 'General';

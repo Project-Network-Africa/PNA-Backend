@@ -13,7 +13,7 @@ export class AssignedMenteeTableRowDto {
   @ApiProperty({ example: 'Backend Developer', description: 'Program / Registered Profession' })
   program: string;
 
-  @ApiProperty({ example: 'On Track', enum: ['On Track', 'Need Attention'] })
+  @ApiProperty({ example: 'On Track', enum: ['On Track', 'Needs Attention'] })
   status: string;
 
   @ApiProperty({ example: '3 hrs ago', description: 'Time since last activity in mins, hrs, or days' })
@@ -60,6 +60,12 @@ export class MenteeDetailResponseDto {
 
   @ApiProperty({ example: 75, description: 'Cohort progress percentage for progress bar' })
   cohortProgressPercentage: number;
+
+  @ApiProperty({ example: 8, nullable: true, description: 'Current cohort week ("Week 8 of 12")' })
+  currentWeek: number | null;
+
+  @ApiProperty({ example: 12, nullable: true })
+  totalWeeks: number | null;
 
   @ApiProperty({ example: '/mentor/messages/user-uuid-101', description: 'Route triggered by clicking Message button' })
   messageRoute: string;

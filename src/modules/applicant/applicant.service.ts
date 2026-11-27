@@ -11,6 +11,7 @@ import { ConfirmScheduleSessionDto } from './dto/schedule-session.dto.js';
 import { SendMessageDto } from './dto/messages.dto.js';
 import { SendReferralInviteDto } from './dto/referral.dto.js';
 import { CreateSupportTicketDto } from './dto/support.dto.js';
+import { RateMentorDto } from './dto/mentorship-response.dto.js';
 
 @Injectable()
 @Injectable()
@@ -550,6 +551,44 @@ export class ApplicantService {
   }
 
 
+  // RATE ASSIGNED MENTOR (upsert, then refresh mentors.rating / ratings_count used by admin + mentor analytics)
+  async rateMentor(userId: string, dto: RateMentorDto) {
+    const { data: details } = await this.supabase
+      .from('applicant_details')
+      .select('mentor_id')
+      .eq('profile_id', userId)
+      .maybeSingle();
+    if (!details?.mentor_id) throw new BadRequestException('You have no assigned mentor to rate');
+
+    const nowIso = new Date().toISOString();
+    const { error } = await this.supabase.from('mentor_ratings').upsert(
+      { mentor_id: details.mentor_id, mentee_id: userId, rating: dto.rating, comment: dto.comment ?? null, updated_at: nowIso },
+      { onConflict: 'mentor_id,mentee_id' },
+    );
+    if (error) throw new BadRequestException(error.message);
+
+    const [{ data: ratings }, { data: mentor }] = await Promise.all([
+      this.supabase.from('mentor_ratings').select('rating').eq('mentor_id', details.mentor_id),
+      this.supabase.from('mentors').select('rating, ratings_count').eq('id', details.mentor_id).single(),
+    ]);
+    const count = ratings?.length || 0;
+    const avg = count ? ratings!.reduce((s: number, r: any) => s + r.rating, 0) / count : 0;
+
+    const { error: updErr } = await this.supabase
+      .from('mentors')
+      .update({
+        rating: Math.round(avg * 100) / 100,
+        ratings_count: count,
+        // first real rating replaces the column's placeholder default, so don't keep that as "previous"
+        previous_rating: mentor?.ratings_count ? mentor.rating : null,
+        rating_updated_at: nowIso,
+      })
+      .eq('id', details.mentor_id);
+    if (updErr) throw new BadRequestException(updErr.message);
+
+    return { message: 'Thanks for rating your mentor', rating: dto.rating };
+  }
+
   // GET MENTORSHIP PAGE DATA
   async getMentorshipData(userId: string) {
     const { data: profile, error: profileError } = await this.supabase
@@ -814,6 +853,7 @@ export class ApplicantService {
     let query = this.supabase
       .from('learning_resources')
       .select('id, title, description, file_type, file_url, pages_count, duration_mins, created_at')
+      .eq('audience', 'applicant')
       .order('created_at', { ascending: false });
 
     if (searchQuery && searchQuery.trim() !== '') {

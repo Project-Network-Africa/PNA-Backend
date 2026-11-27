@@ -17,7 +17,7 @@ export class AssignedMenteeSummaryDto {
   @ApiProperty({ example: 'Cohort 6' })
   registeredCohort: string;
 
-  @ApiProperty({ example: 'On Track', enum: ['On Track', 'Need Attention'] })
+  @ApiProperty({ example: 'On Track', enum: ['On Track', 'Needs Attention'] })
   status: string;
 }
 
@@ -67,13 +67,6 @@ export class MentorDashboardResponseDto {
   recentActivity: any[];
 }
 
-export class ReviewSubmissionDto {
-  @ApiProperty({ example: 'Great database indexing and clean error handling. Ready for deployment.' })
-  @IsString()
-  @IsNotEmpty()
-  feedback: string;
-}
-
 export class MentorQuickScheduleMeetingDto {
   @ApiProperty({ example: 'user-uuid-101' })
   @IsUUID()
@@ -106,16 +99,4 @@ export class MentorQuickLeaveFeedbackDto {
   @IsString()
   @IsNotEmpty()
   note: string;
-}
-
-export class MentorQuickValidateProjectDto {
-  @ApiProperty({ example: 'user-uuid-101' })
-  @IsUUID()
-  @IsNotEmpty()
-  menteeId: string;
-
-  @ApiProperty({ example: 'proj-uuid-202' })
-  @IsUUID()
-  @IsNotEmpty()
-  projectId: string;
 }

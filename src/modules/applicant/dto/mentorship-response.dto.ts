@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 class ApplicantMentorshipProfileDto {
   @ApiProperty({ example: 'John Doe' })
@@ -54,4 +55,17 @@ export class MentorshipResponseDto {
 
   @ApiProperty({ type: [MentorNoteDto] })
   mentorNotes: MentorNoteDto[];
+}
+export class RateMentorDto {
+  @ApiProperty({ example: 5, minimum: 1, maximum: 5 })
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rating: number;
+
+  @ApiProperty({ required: false, example: 'Super helpful feedback every week.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  comment?: string;
 }
